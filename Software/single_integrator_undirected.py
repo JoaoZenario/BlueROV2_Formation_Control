@@ -14,9 +14,9 @@ from matplotlib.animation import FuncAnimation
 from mpl_toolkits.mplot3d import Axes3D
 
 class BROV_Formation:
+
     #* Function to Initialize Variables.
     def __init__(self):
-
         self.dt = 0.01 # Size of simulation steps.
         self.steps = 300 # Number of simulation steps.
         self.c = 1.0  # Control gain.
@@ -111,13 +111,12 @@ class BROV_Formation:
         self.ax.set_title("ROV Formation Evolution Over Time")
         self.ax.legend(loc='upper right', shadow=True, fontsize='medium')
         # Create a Text Box to show the time and agent's velocity.
-        # Use fig.text instead of ax.text
         self.telemetry_text = self.fig.text(0.02, 0.95, '', 
                                     verticalalignment='top', 
                                     family='monospace',
                                     bbox=dict(boxstyle='round', facecolor='white', alpha=0.5))
         self.animation = FuncAnimation(self.fig, self.update_step, frames=self.steps, interval=10, blit=False, repeat = False) # Run animation.
-        #self.animation.save('rov_formation.gif', writer='pillow', fps=30) # Save animation.
+        self.animation.save('rov_formation.gif', writer='pillow', fps=30) # Save animation.
         plt.show() # Plot animation.
 
 if __name__ == "__main__":
