@@ -26,7 +26,7 @@ class BROV_Formation:
         self.history = [self.x.copy()] # Store history of agent's pose over time for the trails.
 
         # Offset formation relative to centroid (in this case (2.33,2.0, 1.0)).
-        # Agent 0 at (0.0, 2.0, 0.0), Agent 1 at (-1.5, -1.0, 0.0), Agent 2 at (1.5, -1.0, 0.0) relative to the formation centroid.
+        # Agent 1 at (0.0, 2.0, 0.0), Agent 2 at (-1.5, -1.0, 0.0), Agent 3 at (1.5, -1.0, 0.0) relative to the formation centroid.
         self.o = np.array([[0.0, 2.0, 0.0], [-1.5, -1.0, 0.0], [1.5, -1.0, 0.0]])
         self.relative_pos_desired = np.zeros((3, 3, 3)) # Stores desired relative positions between agents.
 

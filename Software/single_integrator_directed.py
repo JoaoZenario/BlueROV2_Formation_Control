@@ -26,7 +26,7 @@ class BROV_Formation:
         self.N = self.x.shape[0] # Number of agents in the system.
         self.history = [self.x.copy()] # Store history of agent's pose over time for the trails.
 
-        # Offset formation relative to Leader).
+        # Offset formation relative to Leader.
         # Agent 1 at (0.0, 0.0, 0.0), since it's the leader, Agent 2 at (-10.0, -10.0, 0.0), Agent 3 at (10.0, -10.0, 0.0) relative to the formation centroid.
         self.o = np.array([[0.0, 0.0, 0.0], [-10.0, -10.0, 0.0], [10.0, -10.0, 0.0]])
         self.relative_pos_desired = np.zeros((3, 3, 3)) # Stores desired relative positions between agents.
@@ -81,7 +81,7 @@ class BROV_Formation:
                 agent_i_velocity -= (relative_pos_real - self.relative_pos_desired[i, j]) # Add the contribution of neighbor j to agent i's velocity.
                 u_position = self.c * agent_i_velocity # Velocity needed for agent i to reach desired position.
                 u_leader = u[j].copy() # Store leader's velocity vector.
-                # It's crucial to add leader's velocity to the velocity that agent i would initially need to achieve desired pose,
+                # It's crucial to add leader's velocity to the velocity that agent i would initially need to achieve the desired pose,
                 # because leader is in movement and that must be taken into account.
                 u[i] = u_position + u_leader # Agent's i velocity.
         return u # Used in the update_step function.
@@ -140,8 +140,8 @@ class BROV_Formation:
                                     family='monospace',
                                     bbox=dict(boxstyle='round', facecolor='white', alpha=0.5))
         self.animation = FuncAnimation(self.fig, self.update_step, frames=self.steps, interval=10, blit=False, repeat = False) # Run animation.
-        plt.show() # Plot animation.
         self.animation.save('rov_formation.gif', writer='pillow', fps=30) # Save animation.
+        plt.show() # Plot animation.
 
 if __name__ == "__main__":
     sim = BROV_Formation()
