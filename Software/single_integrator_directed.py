@@ -12,6 +12,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation
 from mpl_toolkits.mplot3d import Axes3D
+import random
 
 class BROV_Formation:
 
@@ -21,18 +22,49 @@ class BROV_Formation:
         self.steps = 1000 # Number of simulation steps.
         self.counter = 0 # Variable to count the steps (iterations) throughout time.
         self.c = 1.0  # Control gain.
-        self.colors = ['#FF0000', '#0000FF', '#008000'] # Colors to distinguish each agent (Red, Blue, Green).
-        self.x = np.array([[0.0, 0.0, 0.0], [20.0, 50.0, 10.0], [50.0, 10.0, 20.0]]) # Initial random positions, 3 agents in 3D space (x, y, z).
-        self.N = self.x.shape[0] # Number of agents in the system.
+        self.colors = ['#FF0000', '#0000FF', '#008000', '#FF8C00', '#9400D3', '#FF1493'] # Colors to distinguish each agent (Red, Blue, Green).
+        self.N = 6 # Number of agents in the system. Change to desired value.
+        self.x = np.zeros((self.N, 3)) # Initial random positions, N agents in 3D space (x, y, z).
+        self.x[0] = np.random.uniform(1, 100, size=3) # Define leader's pose.
+        # Distance matrix. Since this is an directed graph and the agents are only connected to the leader, the distance from the agents to the leader is the only one known.
+        self.d = np.zeros_like(self.x)
+
+        # Fillinf matrix d with random distances from agents to leader.
+        for i in range(1, self.N):
+            self.d[i, 0] = random.uniform(1, 100)
+
+        # Filling matrix x with random coordinates accordingly with the distance matrix.
+        for i in range (1, self.N):
+            # Compute the coordinates in order to fullfill the requisite: d_i = √((x_i - x_0)² + (y_i - y_0)² + (z_i - z_0)²) -> Sphere with radius d_i and center x_0 (Leader's pose).
+            phi = random.uniform(0, 2 * np.pi)
+            costheta = random.uniform(-1, 1)
+            theta = np.arccos(costheta)
+            # Unit vector on sphere
+            x = np.sin(theta) * np.cos(phi)
+            y = np.sin(theta) * np.sin(phi)
+            z = np.cos(theta)
+            
+            # Final Position = Leader + (Distance * Direction)
+            self.x[i] = self.x[0] + self.d[i, 0] * np.array([x, y, z])
+        
         self.history = [self.x.copy()] # Store history of agent's pose over time for the trails.
 
+        R = 30.0  # Distance from leader
         # Offset formation relative to Leader.
-        # Agent 1 at (0.0, 0.0, 0.0), since it's the leader, Agent 2 at (-10.0, -10.0, 0.0), Agent 3 at (10.0, -10.0, 0.0) relative to the formation centroid.
-        self.o = np.array([[0.0, 0.0, 0.0], [-10.0, -10.0, 0.0], [10.0, -10.0, 0.0]])
-        self.relative_pos_desired = np.zeros((3, 3, 3)) # Stores desired relative positions between agents.
+        self.o = np.zeros((self.N, 3))
+
+        # Agent 0 is the leader at (0,0,0)
+        # Agents 1 to 5 form the pentagon
+        for i in range(1, self.N):
+            angle = (2 * np.pi / 5) * (i - 1)
+            self.o[i, 0] = R * np.cos(angle) # X offset
+            self.o[i, 1] = R * np.sin(angle) # Y offset
+            self.o[i, 2] = 0.0               # Z offset (same depth)
+
+        self.relative_pos_desired = np.zeros((self.N, self.N, 3)) # Stores desired relative positions between agents.
 
         for i in range(self.N):
-            for j in range(self.N):
+            for j in range(3):
                 self.relative_pos_desired[i, j] = self.o[i] - self.o[j] # Fills the array with the desired relative positions.
             if i:
                 self.target_dist = np.linalg.norm(self.relative_pos_desired[i, 0]) # Calculate the target distance (from desired offsets).
@@ -40,9 +72,10 @@ class BROV_Formation:
         # Adjacency Matrix.
         # This represents who can "see" whom. Since this is a sirected system, the leader doesn't communicate with anyone and the others only comunicate with the leader.
         # A = [a_ij], where a_ij = 1 if agent i and j are connected, else 0.
-        self.A = np.array([[0, 0, 0],
-                           [1, 0, 0],
-                           [1, 0, 0]])
+        self.A = np.zeros((self.N, self.N))
+
+        for i in range(1, self.N):
+            self.A[i, 0] = 1
 
         # Degree Matrix.
         # D is a diagonal matrix where each entry is the sum of each matrix A row (d_ii = ∑_j a_ij).
@@ -76,11 +109,14 @@ class BROV_Formation:
 
             else:
                 agent_i_velocity = np.array([0.0, 0.0, 0.0]) # Initialize velocity vector.
-                j = 0 # Since the leader is the only one taken into account.
-                relative_pos_real = self.x[i] - self.x[j] # Computes the real relative pose.
-                agent_i_velocity -= (relative_pos_real - self.relative_pos_desired[i, j]) # Add the contribution of neighbor j to agent i's velocity.
-                u_position = self.c * agent_i_velocity # Velocity needed for agent i to reach desired position.
-                u_leader = u[j].copy() # Store leader's velocity vector.
+                #j = 0 # Since the leader is the only one taken into account.
+                # Generalized.
+                for j in range(self.N):
+                    if self.A[i, j] == 1:
+                        relative_pos_real = self.x[i] - self.x[j] # Computes the real relative pose.
+                        agent_i_velocity -= (relative_pos_real - self.relative_pos_desired[i, j]) # Add the contribution of neighbor j to agent i's velocity.
+                        u_position = self.c * agent_i_velocity # Velocity needed for agent i to reach desired position.
+                        u_leader = u[j].copy() # Store leader's velocity vector.
                 # It's crucial to add leader's velocity to the velocity that agent i would initially need to achieve the desired pose,
                 # because leader is in movement and that must be taken into account.
                 u[i] = u_position + u_leader # Agent's i velocity.
@@ -125,9 +161,9 @@ class BROV_Formation:
         self.ax = self.fig.add_subplot(111, projection='3d')
         self.dots = [self.ax.plot([], [], 'o', color=self.colors[i], markersize=5, label=f"ROV {i+1}")[0] for i in range(self.N)] # Create 3 dots, one for each agent.
         self.trails = [self.ax.plot([], [], '-', color=self.colors[i], alpha=0.2)[0] for i in range(self.N)] # Create the path trail for each agent.
-        self.ax.set_xlim(-100, 100) # Plot limits based on the agent's x pose.
-        self.ax.set_ylim(-100, 100) # Plot limits based on the agent's y pose.
-        self.ax.set_zlim(-100, 100) # Plot limits based on the agent's z pose.
+        self.ax.set_xlim(-200, 200) # Plot limits based on the agent's x pose.
+        self.ax.set_ylim(-200, 200) # Plot limits based on the agent's y pose.
+        self.ax.set_zlim(-200, 200) # Plot limits based on the agent's z pose.
         self.ax.set_xlabel('X (m)')
         self.ax.set_ylabel('Y (m)')
         self.ax.set_zlabel('Z (m)')
@@ -140,7 +176,7 @@ class BROV_Formation:
                                     family='monospace',
                                     bbox=dict(boxstyle='round', facecolor='white', alpha=0.5))
         self.animation = FuncAnimation(self.fig, self.update_step, frames=self.steps, interval=10, blit=False, repeat = False) # Run animation.
-        self.animation.save('rov_formation.gif', writer='pillow', fps=30) # Save animation.
+        #self.animation.save('rov_formation.gif', writer='pillow', fps=30) # Save animation.
         plt.show() # Plot animation.
 
 if __name__ == "__main__":
