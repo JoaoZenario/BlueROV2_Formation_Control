@@ -22,8 +22,7 @@ class BROV_Formation:
         self.steps = 1000 # Number of simulation steps.
         self.counter = 0 # Variable to count the steps (iterations) throughout time.
         self.c = 1.0  # Control gain.
-        self.colors = ['#FF0000', '#0000FF', '#008000', '#FF8C00', '#9400D3', '#FF1493'] # Colors to distinguish each agent (Red, Blue, Green).
-        self.N = 6 # Number of agents in the system. Change to desired value.
+        self.N = 10 # Number of agents in the system. Change to desired value.
         self.x = np.zeros((self.N, 3)) # Initial random positions, N agents in 3D space (x, y, z).
         self.x[0] = np.random.uniform(1, 100, size=3) # Define leader's pose.
         # Distance matrix. Since this is an directed graph and the agents are only connected to the leader, the distance from the agents to the leader is the only one known.
@@ -46,17 +45,30 @@ class BROV_Formation:
             
             # Final Position = Leader + (Distance * Direction)
             self.x[i] = self.x[0] + self.d[i, 0] * np.array([x, y, z])
+
+        # Colors to distinguish each agent.
+        self.colors = [
+            '#{:02X}{:02X}{:02X}'.format(
+                int(r * 255), int(g * 255), int(b * 255)
+            )
+            for r, g, b, _ in plt.cm.hsv([i / self.N for i in range(self.N)])
+        ]
         
         self.history = [self.x.copy()] # Store history of agent's pose over time for the trails.
 
-        R = 30.0  # Distance from leader
+        R = 30.0  # Distance from leader. Change to desired value.
         # Offset formation relative to Leader.
         self.o = np.zeros((self.N, 3))
 
         # Agent 0 is the leader at (0,0,0)
-        # Agents 1 to 5 form the pentagon
+        # Agents 1 to N form a shape around the leader, examples:
+        # N = 4: Triangle with the leader in the center.
+        # N = 5: Square with the leader in the center.
+        # N = 6: Pentagon with the leader in the center.
+        # N = 11:  Decagon with the leader in the center.
+        # N -> +∞ Shape -> Circle with the leader in the center.
         for i in range(1, self.N):
-            angle = (2 * np.pi / 5) * (i - 1)
+            angle = (2 * np.pi / (self.N - 1)) * (i - 1)
             self.o[i, 0] = R * np.cos(angle) # X offset
             self.o[i, 1] = R * np.sin(angle) # Y offset
             self.o[i, 2] = 0.0               # Z offset (same depth)
