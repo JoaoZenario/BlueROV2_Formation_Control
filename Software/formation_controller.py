@@ -75,7 +75,8 @@ class BROV_Formation:
             stats += f"ROV {i+1} Vel: {speed:5.2f} m/s\n"
 
             if i: # Skip if i=0.
-                dist_to_leader = np.linalg.norm(params.x[i] - params.x[0]) # Calculate actual distance to leader using the same method (Euclidean distance): d = √[(u_x_i - u_x_0)² + (u_y_i - u_y_0)² + (u_z_i - u_z_0)²].
+                # Calculate actual distance to leader using the same method (Euclidean distance): d = √[(u_x_i - u_x_0)² + (u_y_i - u_y_0)² + (u_z_i - u_z_0)²].
+                dist_to_leader = np.linalg.norm(params.x[i] - params.x[0])
                 stats += f"Distance to Leader: {dist_to_leader:5.2f}m (Target: {params.target_dist:5.2f}m)\n"
         
         animator.telemetry_text.set_text(stats) # Store the statistics for the animation.

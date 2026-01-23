@@ -42,3 +42,4 @@ class Animation:
         self.animation = FuncAnimation(self.fig, controller.update_step, frames=params.steps, fargs=(params, self), interval=10, blit=False, repeat = False) # Run animation.
         #self.animation.save('rov_formation.gif', writer='pillow', fps=30) # Save animation.
         plt.show() # Plot animation.
+        #return self.animation # Uncomment when running on jupyter notebook.

@@ -20,10 +20,10 @@ class Parameters:
     def __init__(self):
         # New added code for random graph generation and distance between agents.
         self.N = random.randint(2, 20) # Number of agents in the system. Change to desired value.
-        self.dim = 3 # 3D. It's possible to switch between 2D and 3D
-        self.d_max = 40  # Connection radius
-        self.d_min = 0.0  # No minimum distance requirement
-        self.l = 100 # Square side length (unit square)
+        self.dim = 3 # 3D. It's possible to switch between 2D and 3D.
+        self.d_max = 40  # Connection radius.
+        self.d_min = 0.0  # No minimum distance requirement.
+        self.l = 100 # Square side length (unit square).
         self.mode = 1 # Parameter to specifiy which graph is desired, directed (1) or undirected (0).
         self.x, self.A, self.E, self.NE, self.dist = generate_random_connected_graph(self.N, self.dim, self.d_max, self.d_min, self.l, self.mode)
         plot_graph_from_adjacency(self.x, self.A, self.mode)
@@ -57,12 +57,12 @@ class Parameters:
         for i in range(1, self.N):
             angle = (2 * np.pi / (self.N - 1)) * (i - 1)
             if self.dim == 2:
-                self.o[i, 0] = R * np.sin(angle) # X offset
-                self.o[i, 1] = 0.0               # Y offset (same Y)
+                self.o[i, 0] = R * np.sin(angle) # X offset.
+                self.o[i, 1] = 0.0               # Y offset (same Y).
             if self.dim == 3:
-                self.o[i, 0] = R * np.cos(angle) # X offset
-                self.o[i, 1] = R * np.sin(angle) # Y offset
-                self.o[i, 2] = 0.0               # Z offset (same depth)
+                self.o[i, 0] = R * np.cos(angle) # X offset.
+                self.o[i, 1] = R * np.sin(angle) # Y offset.
+                self.o[i, 2] = 0.0               # Z offset (same depth).
 
         self.relative_pos_desired = np.zeros((self.N, self.N, self.dim)) # Stores desired relative positions between agents.
 

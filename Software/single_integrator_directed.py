@@ -27,6 +27,7 @@ class Simulation:
     def run(self):
         # Start the Matplotlib event loop.
         self.animator.plot_animation(self.params, self.controller)
+        #return self.animator.plot_animation(self.params, self.controller) # Uncomment when running on jupyter notebook.
 
 #* Main.
 def main():
