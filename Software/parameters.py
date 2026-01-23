@@ -24,9 +24,9 @@ class Parameters:
         self.d_max = 40  # Connection radius
         self.d_min = 0.0  # No minimum distance requirement
         self.l = 100 # Square side length (unit square)
-        #self.leader = random.randint(0, self.N - 1)
-        self.x, self.A, self.E, self.NE, self.dist = generate_random_connected_graph(self.N, self.dim, self.d_max, self.d_min, self.l)
-        plot_graph_from_adjacency(self.x, self.A)
+        self.mode = 1 # Parameter to specifiy which graph is desired, directed (1) or undirected (0).
+        self.x, self.A, self.E, self.NE, self.dist = generate_random_connected_graph(self.N, self.dim, self.d_max, self.d_min, self.l, self.mode)
+        plot_graph_from_adjacency(self.x, self.A, self.mode)
 
         self.dt = 0.01 # Size of simulation steps.
         self.steps = 1000 # Number of simulation steps.

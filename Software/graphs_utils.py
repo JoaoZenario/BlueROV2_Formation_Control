@@ -112,7 +112,7 @@ def is_connected_scipy(A: np.ndarray) -> bool:
 
 
 def generate_random_connected_graph(
-    N: int, d: int, d_max: float, d_min: float, l: float
+    N: int, d: int, d_max: float, d_min: float, l: float, mode: bool
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, int]:
     """
     Generates a random proximity graph embedded in (R^d)^N.
@@ -123,6 +123,7 @@ def generate_random_connected_graph(
         d_max (float): Maximum distance for two nodes to be neighbors (radius).
         d_min (float): Minimum distance for two nodes to be neighbors.
         l (float): Length of the side of the square/hypercube [0, l]^d.
+        mode (str): Mode to specifiy which graph is desired, directed (1) or undirected (0).
 
     Returns:
         Tuple[np.ndarray, np.ndarray, np.ndarray, int]:
@@ -163,14 +164,16 @@ def generate_random_connected_graph(
         # Two nodes are neighbors if d_min <= dist <= d_max
         A = (dist <= d_max) & (dist >= d_min)
         A = A.astype(int) # Convert boolean to integer (0 or 1)
-        A = np.tril(A, k=-1) # In order to transform in a directed system (strictily lower triangular matrix)
 
-        for i in range(1, N):
-            # If the sum of row i is 0, this agent follows no one.
-            if np.sum(A[i, :]) == 0:
-                # Connect to any random agent with a lower index.
-                random_parent = np.random.randint(0, i)
-                A[i, random_parent] = 1
+        if mode:
+            A = np.tril(A, k=-1) # In order to transform in a directed system (strictily lower triangular matrix)
+
+            for i in range(1, N):
+                # If the sum of row i is 0, this agent follows no one.
+                if np.sum(A[i, :]) == 0:
+                    # Connect to any random agent with a lower index.
+                    random_parent = np.random.randint(0, i)
+                    A[i, random_parent] = 1
 
         # 4. Check Connectivity
         # MATLAB: connected = all( all( A^N ) ) is an algebraic check for connectivity
@@ -193,6 +196,7 @@ def generate_random_connected_graph(
 def plot_graph_from_adjacency(
     P: np.ndarray,
     A: np.ndarray,
+    mode: bool,
     title: str = "Connected Proximity Graph Topology",
     show: bool = True,
     **kwargs: Dict[str, Any],
@@ -210,7 +214,10 @@ def plot_graph_from_adjacency(
     N = P.shape[0]
 
     # 1. Create the NetworkX Graph object
-    G = nx.DiGraph(A)
+    if mode:
+        G = nx.DiGraph(A)
+    else:
+        G = nx.Graph(A)
 
     # 2. Map the positions from the P matrix to the required NetworkX dictionary format
     # The dictionary keys must be the node indices (0 to N-1)
@@ -226,9 +233,6 @@ def plot_graph_from_adjacency(
         "node_size": 400,
         "edge_color": "#AAAAAA",
         "width": 1.5,
-        "arrows": True,
-        "arrowstyle": '-|>',
-        "arrowsize": 20,
         "with_labels": False,  # We'll draw labels separately for better control
         "font_weight": "bold",
         "font_color": "white",
