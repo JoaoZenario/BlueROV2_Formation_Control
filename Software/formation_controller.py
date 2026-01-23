@@ -26,17 +26,25 @@ class BROV_Formation:
 
         for i in range(params.N):
             if i == 0:
-                if (params.counter < 0.5 * params.steps):
-                    u[i, 0] = 5  # Leader's x speed.
-                    u[i, 1] = 20 # Leader's y speed.
-                    u[i, 2] = 5  # Leader's z speed.
-                else:
-                    u[i, 0] = -10.0 # Leader's x speed.
-                    u[i, 1] = -10.0 # Leader's y speed.
-                    u[i, 2] = 5.0   # Leader's z speed.
+                if params.dim == 2:
+                    if (params.counter < 0.5 * params.steps):
+                        u[i, 0] = 5  # Leader's x speed.
+                        u[i, 1] = 20 # Leader's y speed.
+                    else:
+                        u[i, 0] = -10.0 # Leader's x speed.
+                        u[i, 1] = -10.0 # Leader's y speed.
+                if params.dim == 3:
+                    if (params.counter < 0.5 * params.steps):
+                        u[i, 0] = 5  # Leader's x speed.
+                        u[i, 1] = 20 # Leader's y speed.
+                        u[i, 2] = 5  # Leader's z speed.
+                    else:
+                        u[i, 0] = -10.0 # Leader's x speed.
+                        u[i, 1] = -10.0 # Leader's y speed.
+                        u[i, 2] = 5.0   # Leader's z speed.
 
             else:
-                agent_i_velocity = np.array([0.0, 0.0, 0.0]) # Initialize velocity vector.
+                agent_i_velocity = np.zeros(params.dim) # Initialize velocity vector.
                 #j = 0 # Since the leader is the only one taken into account.
                 # Generalized.
                 for j in range(params.N):
@@ -67,7 +75,8 @@ class BROV_Formation:
             stats += f"ROV {i+1} Vel: {speed:5.2f} m/s\n"
 
             if i: # Skip if i=0.
-                dist_to_leader = np.linalg.norm(params.x[i] - params.x[0]) # Calculate actual distance to leader using the same method (Euclidean distance): d = √[(u_x_i - u_x_0)² + (u_y_i - u_y_0)² + (u_z_i - u_z_0)²].
+                # Calculate actual distance to leader using the same method (Euclidean distance): d = √[(u_x_i - u_x_0)² + (u_y_i - u_y_0)² + (u_z_i - u_z_0)²].
+                dist_to_leader = np.linalg.norm(params.x[i] - params.x[0])
                 stats += f"Distance to Leader: {dist_to_leader:5.2f}m (Target: {params.target_dist:5.2f}m)\n"
         
         animator.telemetry_text.set_text(stats) # Store the statistics for the animation.
@@ -75,9 +84,11 @@ class BROV_Formation:
         for i in range(params.N):
             # Update the dots on the plot.
             animator.dots[i].set_data([params.x[i, 0]], [params.x[i, 1]]) # For x and y.
-            animator.dots[i].set_3d_properties([params.x[i, 2]]) # For z.
             # Stores all time steps of each agent until this moment.
             animator.trails[i].set_data(history_np[:, i, 0], history_np[:, i, 1]) # For x and y.
-            animator.trails[i].set_3d_properties(history_np[:, i, 2]) # For z.
+
+            if params.dim == 3:
+                animator.dots[i].set_3d_properties([params.x[i, 2]]) # # Update the dots on the plot for z.
+                animator.trails[i].set_3d_properties(history_np[:, i, 2]) # # Stores all time steps of each agent until this moment for z.
 
         return animator.dots + animator.trails + [animator.telemetry_text] # For efficiency, returning these variables is crucial since they were the only ones that changed.
