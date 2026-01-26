@@ -22,7 +22,7 @@ class Parameters:
         self.N = random.randint(2, 20) # Number of agents in the system. Change to desired value.
         self.dim = 3 # 3D. It's possible to switch between 2D and 3D.
         self.d_max = 40  # Connection radius.
-        self.d_min = 0.0  # No minimum distance requirement.
+        self.d_min = 0.0  # Minimum distance requirement.
         self.l = 100 # Square side length (unit square).
         self.mode = 1 # Parameter to specifiy which graph is desired, directed (1) or undirected (0).
         self.x, self.A, self.E, self.NE, self.dist = generate_random_connected_graph(self.N, self.dim, self.d_max, self.d_min, self.l, self.mode)
@@ -31,7 +31,9 @@ class Parameters:
         self.dt = 0.01 # Size of simulation steps.
         self.steps = 1000 # Number of simulation steps.
         self.counter = 0 # Variable to count the steps (iterations) throughout time.
-        self.c = 1.0  # Control gain.
+        self.c1 = 1.0  # Control gain.
+        self.c2 = 1.0  # Control gain.
+        self.v_max = 50 # Maximum velocity a robot can reach.
 
         # Colors to distinguish each agent.
         self.colors = [
@@ -43,7 +45,7 @@ class Parameters:
 
         self.history = [self.x.copy()] # Store history of agent's pose over time for the trails.
 
-        R = 30.0  # Distance from leader. Change to desired value.
+        R = 20  # Distance from leader. Change to desired value.
         # Offset formation relative to Leader.
         self.o = np.zeros((self.N, self.dim))
 

@@ -23,6 +23,7 @@ class BROV_Formation:
         # To compute the velocity we'll use equation 2.11 and 2.13 (with a slight change):
         # ̇ẋ_i = u_i = -c * ∑_j [(x_i - x_j) - (o_i - o_j)] for all j connected to i.
         u = np.zeros_like(params.x) # u will store each agent's velocity.
+        delta_k = params.d_max**2
 
         for i in range(params.N):
             if i == 0:
@@ -44,18 +45,32 @@ class BROV_Formation:
                         u[i, 2] = 5.0   # Leader's z speed.
 
             else:
-                agent_i_velocity = np.zeros(params.dim) # Initialize velocity vector.
-                #j = 0 # Since the leader is the only one taken into account.
+                # Initialize velocity vectors.
+                agent_i_velocity = np.zeros(params.dim)
+                v_tilde = np.zeros(params.dim)
+                v_star = np.zeros(params.dim)
+                u_leader = np.zeros(params.dim)
                 # Generalized.
                 for j in range(params.N):
                     if params.A[i, j] == 1:
-                        relative_pos_real = params.x[i] - params.x[j] # Computes the real relative pose.
-                        agent_i_velocity -= (relative_pos_real - params.relative_pos_desired[i, j]) # Add the contribution of neighbor j to agent i's velocity.
-                        u_position = params.c * agent_i_velocity # Velocity needed for agent i to reach desired position.
+                        z_k = params.x[i] - params.x[j] # Computes the real relative pose.
+                        # Velocity needed for agent i to reach desired position, by adding the contribution of neighbor j to agent i's velocity.
+                        v_tilde += (z_k - params.relative_pos_desired[i, j])
                         u_leader = u[j].copy() # Store leader's velocity vector.
+
+                        # Lyapunov barrier functions for connectivity maintenance throughout the whole trajectory.
+                        W_grad_conn = (1 + (1 / (max(delta_k - np.sum(z_k**2), 1e-2)))) * z_k # max() is used to prevent division by zero if robots touch the limit. Equation 3.81.
+                        v_star -= params.c1 * W_grad_conn # Virtual control. The Incidence Matrix (Eik) is already being take into account in the if statement (Adjacency matrix).
+
                 # It's crucial to add leader's velocity to the velocity that agent i would initially need to achieve the desired pose,
                 # because leader is in movement and that must be taken into account.
-                u[i] = u_position + u_leader # Agent's i velocity.
+                u[i] = -(params.c2 * v_tilde) + v_star + u_leader # Agent's i velocity. Equation 3.82.
+                u_i = np.linalg.norm(u[i]) # Magnitude.
+
+                # Set a max velocity in order to don't explode with the simulation.
+                if u_i > params.v_max:
+                    u[i] *= params.v_max / u_i
+
         return u # Used in the update_step function.
 
     #* Function to update the pose of each agent after the step (moving at u velocity for dt time).
