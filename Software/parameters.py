@@ -22,14 +22,12 @@ class Parameters:
         self.N = random.randint(2, 20) # Number of agents in the system. Change to desired value.
         self.dim = 3 # 3D. It's possible to switch between 2D and 3D.
         self.d_max = 50.0  # Connection radius.
-        self.d_min = 10.0  # Minimum distance requirement.
+        self.d_min = 5.0  # Minimum distance requirement.
         self.l = 100 # Square side length (unit square).
         self.mode_graph = 1 # Parameter to specifiy which graph is desired, directed (1) or undirected (0).
         self.mode_constraint = 2 # Parameter to specifiy if connectivity maintenance and/or collision avoidance are desired (Both(2); Only Connectivity Maintenance(1); No(0)).
-
         self.x, self.A, self.E, self.NE, self.dist = generate_random_connected_graph(self.N, self.dim, self.d_max, self.d_min, self.l, self.mode_graph)
         plot_graph_from_adjacency(self.x, self.A, self.mode_graph)
-
         self.dt = 0.01 # Size of simulation steps.
         self.steps = 1000 # Number of simulation steps.
         self.counter = 0 # Variable to count the steps (iterations) throughout time.

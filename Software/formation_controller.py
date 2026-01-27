@@ -128,8 +128,8 @@ class BROV_Formation:
                     u_head = u[j].copy() # Store agent's j (edge's head) velocity vector.
 
                     # Lyapunov barrier functions for connectivity maintenance throughout the whole trajectory.
-                    W_grad_conn = (1 / (max(params.d_max**2 - np.sum(z_k**2), 1e-2))) * z_k # max() is used to prevent division by zero if robots touch the limit. Equation 3.81.
-                    v_star -= params.c1 * W_grad_conn # Virtual control. The Incidence Matrix (Eik) is already being take into account in the if statement (Adjacency matrix).
+                    W_grad = (1 / (max(params.d_max**2 - np.sum(z_k**2), 1e-2))) * z_k # max() is used to prevent division by zero if robots touch the limit. Equation 3.81.
+                    v_star -= params.c1 * W_grad # Virtual control. The Incidence Matrix (Eik) is already being take into account in the if statement (Adjacency matrix).
 
             # It's crucial to add adjent's j velocity to the velocity that agent i would initially need to achieve the desired pose,
             # because agent j is in movement and that must be taken into account.
@@ -158,9 +158,9 @@ class BROV_Formation:
                     u_head = u[j].copy() # Store agent's j (edge's head) velocity vector.
                     # Lyapunov barrier functions for connectivity maintenance and collision avoidance throughout the whole trajectory.
                     # max() is used to prevent division by zero if robots touch the limit.
-                    W_grad_conn = (1 / (max(params.d_max**2 - np.sum(z_k**2), 1e-2))) * z_k # Connectivity Maintenance - Equation 3.81
-                    W_grad_coll = -(1 / (max(np.sum(z_k**2) - params.d_min**2, 1e-2))) * z_k # Collision Avoidance - Equation 5.8 and 5.9
-                    v_star -= (params.c1 * W_grad_conn + params.c3 * W_grad_coll) # Virtual control. The Incidence Matrix (Eik) is already being take into account in the if statement (Adjacency matrix).
+                    # Connectivity Maintenance - Equation 3.81 and Collision Avoidance - Equation 5.8 and 5.9
+                    W_grad = ((1 / (max(params.d_max**2 - np.sum(z_k**2), 1e-2))) - (1 / (max(np.sum(z_k**2) - params.d_min**2, 1e-2))))* z_k
+                    v_star -= params.c1 * W_grad # Virtual control. The Incidence Matrix (Eik) is already being take into account in the if statement (Adjacency matrix).
 
             # It's crucial to add adjent's j velocity to the velocity that agent i would initially need to achieve the desired pose,
             # because agent j is in movement and that must be taken into account.
