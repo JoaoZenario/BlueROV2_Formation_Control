@@ -36,6 +36,10 @@ class BROV_Formation:
         params.x += u * params.dt # Update positions using Euler's Method (x_i+1 = x_i + u * dt).
         params.history.append(params.x.copy()) # Add agent's latest pose to history.
         history_np = np.array(params.history)
+        
+        current_speeds = [np.linalg.norm(v) for v in u]
+        params.vel_history.append(current_speeds)
+        vel_hist_np = np.array(params.vel_history)
 
         current_time = frame * params.dt
         stats = f"Time: {current_time:5.2f}s\n"
@@ -61,6 +65,8 @@ class BROV_Formation:
             # Stores all time steps of each agent until this moment.
             animator.trails[i].set_data(history_np[:, i, 0], history_np[:, i, 1]) # For x and y.
 
+            animator.vel_lines[i].set_data(time_axis, vel_hist_np[:, i]) # Update velocity animation.
+
             if params.dim == 3:
                 animator.dots[i].set_3d_properties([params.x[i, 2]]) # # Update the dots on the plot for z.
                 animator.trails[i].set_3d_properties(history_np[:, i, 2]) # # Stores all time steps of each agent until this moment for z.
@@ -77,10 +83,13 @@ class BROV_Formation:
                     d = np.linalg.norm(params.x[i] - params.x[j])
                     if d > current_max_dist:
                         current_max_dist = d
-    
+                        
         # Axis limits.
         animator.ax_dist.set_xlim(0, max(2, current_time))
-        animator.ax_dist.set_ylim(0, max(current_max_dist, params.d_max) * 1.1)
+        animator.ax_dist.set_ylim(0, max(current_max_dist, params.d_max) * 1.05)
+        
+        animator.ax_vel.set_xlim(0, max(2, current_time))
+        animator.ax_vel.set_ylim(0, params.v_max * 1.05)
 
         return animator.dots + animator.trails + animator.dist_lines + [animator.telemetry_text] # For efficiency, returning these variables is crucial since they were the only ones that changed.
 

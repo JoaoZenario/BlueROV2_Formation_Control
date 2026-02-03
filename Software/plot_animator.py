@@ -16,7 +16,7 @@ class Animation:
     def __init__(self, params):
         # Animation setup.
         # Create a figure with two subplots, left for physical space, right for distance vs time.
-        self.fig = plt.figure(figsize=(16, 8))
+        self.fig = plt.figure(figsize=(10, 6))
         
         # Physical Space Subplot.
         proj = '3d' if params.dim == 3 else None
@@ -31,26 +31,34 @@ class Animation:
         self.ax.set_xlabel('X (m)')
         self.ax.set_ylabel('Y (m)')
         self.ax.grid(True)
-        self.ax.set_title("ROV Formation Evolution Over Time")
+        self.ax.set_title("ROV Formation Over Time")
 
         self.dots = [self.ax.plot([], [], 'o', color=params.colors[i], markersize=5, label=f"ROV {i+1}")[0] for i in range(params.N)] # Create N dots, one for each agent.
         self.trails = [self.ax.plot([], [], '-', color=params.colors[i], alpha=0.2)[0] for i in range(params.N)] # Create the path trail for each agent.
         self.ax.legend(loc='upper right', shadow=True, fontsize='medium')
 
         # Distance Analysis Subplot.
-        self.ax_dist = self.fig.add_subplot(122)
-        self.ax_dist.set_title("Inter-Agent Distances vs Constraints")
-        self.ax_dist.set_xlabel("Time (s)")
+        self.ax_dist = self.fig.add_subplot(222)
+        self.ax_dist.set_title("Inter-Agent Distances Over Time")
         self.ax_dist.set_ylabel(r"$|z_k|$ (m)")
+
+        # Velocity Subplot
+        self.ax_vel = self.fig.add_subplot(224)
+        self.ax_vel.set_title("Agent Velocities Overt Time")
+        self.ax_vel.set_xlabel("Time (s)")
+        self.ax_vel.set_ylabel(r"$|v_i|$ (m/s)")
         self.ax_dist.grid(True, linestyle=':', alpha=0.6)
 
         # Plot static dashed lines for constraints.
         self.ax_dist.axhline(y=params.d_max, color='red', linestyle='--', linewidth=1.5, label=r'Limit $\Delta_k$')
         self.ax_dist.axhline(y=params.d_min, color='darkred', linestyle='--', linewidth=1.5, label=r'Limit $\delta_k$')
+        self.ax_vel.axhline(y=params.v_max, color='black', linestyle='-.', alpha=0.5, label='Max Speed')
 
-        # Initialize distance lines for each edge in the adjacency matrix.
-        self.dist_lines = []
+        self.vel_lines = [] # Initialize velocity line for each agent.
+        self.dist_lines = [] # Initialize distance lines for each edge in the adjacency matrix.
         for i in range(params.N):
+            line, = self.ax_vel.plot([], [], lw=1.5, color=params.colors[i], label=f'ROV {i+1}')
+            self.vel_lines.append(line)
             for j in range(params.N):
                 if params.A[i, j] == 1:
                     # Each line gets a unique label for the edge.
@@ -58,6 +66,7 @@ class Animation:
                     self.dist_lines.append(line)
         
         self.ax_dist.legend(loc='upper right', fontsize='x-small', ncol=2)
+        self.ax_vel.legend(loc='upper right', fontsize='x-small', ncol=2)
 
         # Telemetry Text.
         # Create a Text Box to show the time and agent's velocity.
@@ -69,7 +78,7 @@ class Animation:
     #* Function to run and plot the animation that shows the robot's movement and formation process throughout time.
     def plot_animation(self, params, controller):
         self.animation = FuncAnimation(self.fig, controller.update_step, frames=params.steps, fargs=(params, self), interval=10, blit=False, repeat = False) # Run animation.
-        #self.animation.save('rov_formation.gif', writer='pillow', fps=30) # Save animation.
+        #self.animation.save('rov_formation.mp4', writer='pillow', fps=30, dpi=100) # Save animation.
         # Plot animation.
         plt.tight_layout()
         plt.show()
