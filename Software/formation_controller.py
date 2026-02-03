@@ -16,6 +16,8 @@ class BROV_Formation:
 
     #* Function to update the pose of each agent after the step (moving at u velocity for dt time).
     def update_step(self, frame, params, animator):
+        edge_count = 0
+        current_max_dist = 0
         t = params.steps * params.dt
         params.counter += 1
         # To compute the velocity we'll use equation 2.11 and 2.13 (with a slight change):
@@ -39,6 +41,8 @@ class BROV_Formation:
         stats = f"Time: {current_time:5.2f}s\n"
         stats += "-" * 15 + "\n"
         
+        time_axis = np.linspace(0, current_time, len(params.history))
+
         for i in range(params.N):
             # Calculate speed (magnitude of velocity vector).
             speed = np.linalg.norm(u[i]) # Compute the speed using the Euclidean norm: |v| = √(u_x² + u_y² + u_z²).  
@@ -61,7 +65,24 @@ class BROV_Formation:
                 animator.dots[i].set_3d_properties([params.x[i, 2]]) # # Update the dots on the plot for z.
                 animator.trails[i].set_3d_properties(history_np[:, i, 2]) # # Stores all time steps of each agent until this moment for z.
 
-        return animator.dots + animator.trails + [animator.telemetry_text] # For efficiency, returning these variables is crucial since they were the only ones that changed.
+            # For loop in order to compute the distance of each edge for the final plot.
+            for j in range(params.N):
+                if params.A[i, j] == 1:
+                    z_k_hist = history_np[:, i, :] - history_np[:, j, :]
+                    dist_hist = np.linalg.norm(z_k_hist, axis=1)
+                    animator.dist_lines[edge_count].set_data(time_axis, dist_hist)
+                    edge_count += 1
+
+                    # Compute the biggest edge for each step in order to update the animation.
+                    d = np.linalg.norm(params.x[i] - params.x[j])
+                    if d > current_max_dist:
+                        current_max_dist = d
+    
+        # Axis limits.
+        animator.ax_dist.set_xlim(0, max(2, current_time))
+        animator.ax_dist.set_ylim(0, max(current_max_dist, params.d_max) * 1.1)
+
+        return animator.dots + animator.trails + animator.dist_lines + [animator.telemetry_text] # For efficiency, returning these variables is crucial since they were the only ones that changed.
 
     #* Function to set leader's velocity throughout the whole simulation.
     def leader_velocity(self, params, u):

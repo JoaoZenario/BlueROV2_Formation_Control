@@ -33,7 +33,6 @@ class Parameters:
         self.counter = 0 # Variable to count the steps (iterations) throughout time.
         self.c1 = 1.0  # Control gain.
         self.c2 = 1.0  # Control gain.
-        self.c3 = 1.0  # Control gain.
         self.v_max = 80 # Maximum velocity a robot can reach.
         R = 20  # Distance from leader. Change to desired value.
 

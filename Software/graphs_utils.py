@@ -166,7 +166,9 @@ def generate_random_connected_graph(
         A = A.astype(int) # Convert boolean to integer (0 or 1)
 
         if mode:
-            A = np.tril(A, k=-1) # In order to transform in a directed system (strictily lower triangular matrix)
+            # In order to transform in a directed system (strictily lower triangular matrix).
+            # This guarantees that a spanning tree exists and therefore that the system is stable.
+            A = np.tril(A, k=-1) 
 
             for i in range(1, N):
                 # If the sum of row i is 0, this agent follows no one.
@@ -188,6 +190,13 @@ def generate_random_connected_graph(
     # Get edge set E and number of edges NE
     E = adj_to_und_edges(A)
     NE = E.shape[0]
+
+    consensus = check_consensus_capability(A)
+
+    if consensus:
+        print("Condition Met: Spanning tree exists and system is stable.")
+    else:
+        print("Condition Failed.")
 
     # Return P, A, E (0-based indexing), NE
     return P, A, E, NE, dist
@@ -259,6 +268,33 @@ def plot_graph_from_adjacency(
     if show:
         plt.show()
 
+#* Function to verifiy if there exists a spanning tree in the generated graph.
+def check_consensus_capability(A):
+    # For a directed graph, all non-zero eigenvalues of L have positive real parts and 0 is a simple eigenvalue if and only if the directed graph contains a directed spanning tree.
+
+    # Degree Matrix.
+    # D is a diagonal matrix where each entry is the sum of each matrix A row (d_ii = ∑_j a_ij).
+    D = np.diag(np.sum(A, axis=1))
+    # Laplacian Matrix.
+    # The Laplacian matrix is the difference between the Degree matrix and the Adjacency matrix (L = D - A, from equation 2.15).
+    L = D - A
+    # Compute Eigenvalues.
+    eigenvalues = np.linalg.eigvals(L)
+    # Count zeros (using a small epsilon for numerical stability).
+    zeros = [ev for ev in eigenvalues if abs(ev) < 1e-10]
+    non_zeros = [ev for ev in eigenvalues if abs(ev) >= 1e-10]
+    
+    # Verify if it's a simple zero.
+    is_simple_zero = (len(zeros) == 1)
+    
+    # Positive Real Parts.
+    # .real is used because eigenvalues can be complex numbers (a + bi).
+    all_positive_real = all(ev.real > 0 for ev in non_zeros)
+    
+    if is_simple_zero and all_positive_real:
+        return True
+    else:
+        return False
 
 # --- Example Usage ---
 if __name__ == "__main__":
