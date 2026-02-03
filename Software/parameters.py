@@ -33,8 +33,7 @@ class Parameters:
         self.counter = 0 # Variable to count the steps (iterations) throughout time.
         self.c1 = 1.0  # Control gain.
         self.c2 = 1.0  # Control gain.
-        self.c3 = 1.0  # Control gain.
-        self.v_max = 80 # Maximum velocity a robot can reach.
+        self.v_max = 100 # Maximum velocity a robot can reach.
         R = 20  # Distance from leader. Change to desired value.
 
         # Colors to distinguish each agent.
@@ -47,6 +46,7 @@ class Parameters:
 
         self.history = [self.x.copy()] # Store history of agent's pose over time for the trails.
         self.o = np.zeros((self.N, self.dim)) # Offset formation relative to Leader.
+        self.vel_history = [np.zeros(self.N)] # Store history of agent's velocity over time.
 
         # Agent 0 is the leader at (0,0,0)
         # Agents 1 to N form a shape around the leader, examples:
