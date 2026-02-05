@@ -31,9 +31,11 @@ class Parameters:
         self.dt = 0.01 # Size of simulation steps.
         self.steps = 1000 # Number of simulation steps.
         self.counter = 0 # Variable to count the steps (iterations) throughout time.
-        self.c1 = 1.0  # Control gain.
-        self.c2 = 1.0  # Control gain.
+        self.c1 = 1.2  # Control gain for Lyapunov's barrier function.
+        self.c2 = 1.0  # Control gain for control input (u).
+        self.gamma = 2.8 # Positive gain for velocity offset regarding double integrator agents.
         self.v_max = 100 # Maximum velocity a robot can reach.
+        self.a_max = 200 # Maximum acceleration a robot can reach.
         R = 20  # Distance from leader. Change to desired value.
 
         # Colors to distinguish each agent.
@@ -46,7 +48,9 @@ class Parameters:
 
         self.history = [self.x.copy()] # Store history of agent's pose over time for the trails.
         self.o = np.zeros((self.N, self.dim)) # Offset formation relative to Leader.
-        self.vel_history = [np.zeros(self.N)] # Store history of agent's velocity over time.
+        self.v = np.zeros((self.N, self.dim)) # Velocity of all agents.
+        self.vel_history = [] # Store history of agent's velocity over time.
+        self.accel_history = [] # Store history of agent's acceleration over time.
 
         # Agent 0 is the leader at (0,0,0)
         # Agents 1 to N form a shape around the leader, examples:
