@@ -14,29 +14,70 @@ import matplotlib.pyplot as plt
 
 from graphs_utils import generate_random_connected_graph
 from graphs_utils import plot_graph_from_adjacency
+
+import argparse
+import sys
    
 class Parameters:
     #* Function to initialize all variables and parameters.
-    def __init__(self):
-        # New added code for random graph generation and distance between agents.
-        self.N = random.randint(2, 20) # Number of agents in the system. Change to desired value.
-        self.dim = 3 # 3D. It's possible to switch between 2D and 3D.
-        self.d_max = 50.0  # Connection radius.
-        self.d_min = 5.0  # Minimum distance requirement.
-        self.l = 100 # Square side length (unit square).
-        self.mode_graph = 1 # Parameter to specifiy which graph is desired, directed (1) or undirected (0).
-        self.mode_constraint = 2 # Parameter to specifiy if connectivity maintenance and/or collision avoidance are desired (Both(2); Only Connectivity Maintenance(1); No(0)).
+    """
+     Arguments:
+            N -> Number of agents in the system.
+            dim -> Simulation dimension (2D or 3D).
+            mode_graph -> Graph type, undirected (0) or directed (1).
+            mode_constraints -> Desired constraints (No Constraints(0); Only Connectivity Maintenance(1); Connectivity Maintenance and Collision Avoidance(2)).
+            mode_dynamics -> Dynamics type, single-integrator dynamics (0) or double-integrator dynamics (1).
+            dt -> Size of simulation steps.
+            steps -> Number of simulation steps.
+            c1 -> Control gain for Lyapunov's barrier function.
+            c2 -> Control gain for control input (u).
+            gamma -> Positive gain for velocity offset regarding double integrator agents.
+            v_max -> Maximum velocity a robot can reach.
+            a_max -> Maximum acceleration a robot can reach.
+            d_max -> Threshold for Connectivity Maintenance.
+            d_min -> Threshold for Collision Avoidance.
+            R -> Formation radius (distance from leader).
+            l -> Square side length (space where agents are spawned).
+    """
+    def __init__(self,
+                 N = 10,
+                 dim = 3,
+                 mode_graph = 1,
+                 mode_constraint = 2,
+                 mode_dynamics = 1,
+                 dt = 0.01,
+                 steps = 1000,
+                 c1 = 1.0,
+                 c2 = 1.0,
+                 gamma = 2.0,
+                 v_max = 100,
+                 a_max = 200,
+                 d_max = 50.0,
+                 d_min = 5.0,
+                 R = 20,
+                 l = 100):
+
+        self.N = N
+        self.dim = dim
+        self.mode_graph = mode_graph
+        self.mode_constraint = mode_constraint
+        self.mode_dynamics = mode_dynamics
+        self.dt = dt
+        self.steps = steps
+        self.c1 = c1
+        self.c2 = c2
+        self.gamma = gamma
+        self.v_max = v_max
+        self.a_max = a_max
+        self.d_max = d_max
+        self.d_min = d_min
+        self.R = R
+        self.l = l
+        self.counter = 0
+
+        # Generate random graph and compute distance between agents and all usefull information.
         self.x, self.A, self.E, self.NE, self.dist = generate_random_connected_graph(self.N, self.dim, self.d_max, self.d_min, self.l, self.mode_graph)
         plot_graph_from_adjacency(self.x, self.A, self.mode_graph)
-        self.dt = 0.01 # Size of simulation steps.
-        self.steps = 1000 # Number of simulation steps.
-        self.counter = 0 # Variable to count the steps (iterations) throughout time.
-        self.c1 = 1.2  # Control gain for Lyapunov's barrier function.
-        self.c2 = 1.0  # Control gain for control input (u).
-        self.gamma = 2.8 # Positive gain for velocity offset regarding double integrator agents.
-        self.v_max = 100 # Maximum velocity a robot can reach.
-        self.a_max = 200 # Maximum acceleration a robot can reach.
-        R = 20  # Distance from leader. Change to desired value.
 
         # Colors to distinguish each agent.
         self.colors = [
@@ -50,7 +91,9 @@ class Parameters:
         self.o = np.zeros((self.N, self.dim)) # Offset formation relative to Leader.
         self.v = np.zeros((self.N, self.dim)) # Velocity of all agents.
         self.vel_history = [] # Store history of agent's velocity over time.
-        self.accel_history = [] # Store history of agent's acceleration over time.
+
+        if self.mode_dynamics:
+            self.accel_history = [] # Store history of agent's acceleration over time.
 
         # Agent 0 is the leader at (0,0,0)
         # Agents 1 to N form a shape around the leader, examples:
@@ -65,8 +108,8 @@ class Parameters:
                 self.o[i, 0] = 0.0 # X offset.
                 self.o[i, 1] = i*5 # Y offset (same Y).
             if self.dim == 3:
-                self.o[i, 0] = R * np.cos(angle) # X offset.
-                self.o[i, 1] = R * np.sin(angle) # Y offset.
+                self.o[i, 0] = self.R * np.cos(angle) # X offset.
+                self.o[i, 1] = self.R * np.sin(angle) # Y offset.
                 self.o[i, 2] = 0.0               # Z offset (same depth).
 
         self.relative_pos_desired = np.zeros((self.N, self.N, self.dim)) # Stores desired relative positions between agents.
@@ -77,3 +120,49 @@ class Parameters:
                 self.relative_pos_desired[i, j] = self.o[i] - self.o[j] # Fills the array with the desired relative positions.
             if i:
                 self.target_dist[i] = np.linalg.norm(self.relative_pos_desired[i, 0]) # Calculate the target distance (from desired offsets).
+
+    @staticmethod
+    def function_arguments():
+        """Creates a Parameters instance using command line arguments."""
+        parser = argparse.ArgumentParser(description="Formation Control Simulation Parameters")
+        
+        # Add arguments matching your __init__ parameters
+        parser.add_argument('--N', type=int, default=10, help='Number of agents')
+        parser.add_argument('--dim', type=int, default=3, help='Dimension (2D or 3D)')
+        parser.add_argument('--graph', type=int, default=1, help='Graph type (0: Undirected, 1: Directed)')
+        parser.add_argument('--constraint', type=int, default=2, help='Constraints (0: None, 1: Conn, 2: Both)')
+        parser.add_argument('--dynamics', type=int, default=1, help='Dynamics (0: Single, 1: Double)')
+        parser.add_argument('--dt', type=float, default=0.01, help='Size of simulation steps')
+        parser.add_argument('--steps', type=int, default=1000, help='Number of simulation steps')
+        parser.add_argument('--c1', type=float, default=1.0, help='Barrier function gain')
+        parser.add_argument('--c2', type=float, default=1.0, help='Control gain')
+        parser.add_argument('--gamma', type=float, default=2.0, help='Velocity offset gain')
+        parser.add_argument('--v_max', type=int, default=100, help='Maximum velocity')
+        parser.add_argument('--a_max', type=int, default=200, help='Maximum acceleration')
+        parser.add_argument('--d_max', type=int, default=50, help='Connectivity Maintenance threshold')
+        parser.add_argument('--d_min', type=int, default=5, help='Collision Avoidance threshold')       
+        parser.add_argument('--R', type=int, default=20.0, help='Formation radius')
+        parser.add_argument('--l', type=int, default=100, help='Square side length') 
+        
+        # Parse the arguments from sys.argv
+        args = parser.parse_args()
+        
+        # Return a NEW instance of Parameters using the parsed values
+        return Parameters(
+            N=args.N,
+            dim=args.dim,
+            mode_graph=args.graph,
+            mode_constraint=args.constraint,
+            mode_dynamics=args.dynamics,
+            dt=args.dt,
+            steps=args.steps,
+            c1=args.c1,
+            c2=args.c2,
+            gamma=args.gamma,
+            v_max=args.v_max,
+            a_max=args.a_max,
+            d_max=args.d_max,
+            d_min=args.d_min,
+            R=args.R,
+            l=args.l
+        )

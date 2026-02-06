@@ -2,7 +2,7 @@
 
 ##########################################################
 #                                                        #
-# Single Integrator Formation Control - Directed Graph   #
+# Formation Simulation                                   #
 # Code Author: João Zenário                              #
 #                                                        #     
 ##########################################################
@@ -13,9 +13,9 @@ from plot_animator import Animation
 
 class Simulation:
     #* Function to setup all classes in order to run the simulation.
-    def __init__(self):
+    def __init__(self, params):
         # 1. Initialize all parameters and variables.
-        self.params = Parameters() 
+        self.params = params
         
         # 2. Setup the controller.
         self.controller = BROV_Formation()
@@ -31,7 +31,30 @@ class Simulation:
 
 #* Main.
 def main():
-    sim = Simulation() # Create the simulation object.
+    params = Parameters.function_arguments() # Set parameters from terminal.
+
+    print("\n" + "="*50)
+    print("      BLUE ROV2 FORMATION CONTROL SIMULATION")
+    print("="*50)
+    dashboard = (
+        f"--- CONFIGURATION ---\n"
+        f"Agents (N):        {params.N}\n"
+        f"Dimension:         {params.dim}D\n"
+        f"Dynamics:          {'Double' if params.mode_dynamics else 'Single'} Integrator\n"
+        f"Graph Type:        {'Directed' if params.mode_graph else 'Undirected'}\n"
+        f"Constraints:       {['None', 'Connectivity', 'Both'][params.mode_constraint]}\n"
+        f"\n--- PHYSICS & CONTROL ---\n"
+        f"Time Step (dt):    {params.dt}s ({params.steps} steps)\n"
+        f"Gains:             c1={params.c1}, c2={params.c2}, γ={params.gamma if params.mode_dynamics else 'N/A'}\n"
+        f"Limits:            v_max={params.v_max}m/s, a_max={params.a_max}m/s²\n"
+        f"\n--- GEOMETRY ---\n"
+        f"Thresholds:        d_max={params.d_max}m, d_min={params.d_min}m\n"
+        f"Formation:         Radius={params.R}m, Spawn Area={params.l}m²"
+    )
+    print(dashboard)
+    print("="*50 + "\n")
+
+    sim = Simulation(params) # Create the simulation object.
     sim.run() # Run it.
 
 if __name__ == "__main__":
