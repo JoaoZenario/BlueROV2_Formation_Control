@@ -49,7 +49,7 @@ class Parameters:
                  steps = 1000,
                  c1 = 1.0,
                  c2 = 1.0,
-                 gamma = 2.0,
+                 gamma = 1.0,
                  v_max = 100,
                  a_max = 200,
                  d_max = 50.0,
@@ -74,7 +74,7 @@ class Parameters:
         self.R = R
         self.l = l
         self.counter = 0
-
+        
         # Generate random graph and compute distance between agents and all usefull information.
         self.x, self.A, self.E, self.NE, self.dist = generate_random_connected_graph(self.N, self.dim, self.d_max, self.d_min, self.l, self.mode_graph)
         plot_graph_from_adjacency(self.x, self.A, self.mode_graph)
@@ -136,7 +136,7 @@ class Parameters:
         parser.add_argument('--steps', type=int, default=1000, help='Number of simulation steps')
         parser.add_argument('--c1', type=float, default=1.0, help='Barrier function gain')
         parser.add_argument('--c2', type=float, default=1.0, help='Control gain')
-        parser.add_argument('--gamma', type=float, default=2.0, help='Velocity offset gain')
+        parser.add_argument('--gamma', type=float, default=1.0, help='Velocity offset gain')
         parser.add_argument('--v_max', type=int, default=100, help='Maximum velocity')
         parser.add_argument('--a_max', type=int, default=200, help='Maximum acceleration')
         parser.add_argument('--d_max', type=int, default=50, help='Connectivity Maintenance threshold')

@@ -107,7 +107,7 @@ class Animation:
     #* Function to run and plot the animation that shows the robot's movement and formation process throughout time.
     def plot_animation(self, params, controller):
         self.animation = FuncAnimation(self.fig, controller.update_step, frames=params.steps, fargs=(params, self), interval=10, blit=False, repeat = False) # Run animation.
-        #self.animation.save('rov_formation.mp4', writer='pillow', fps=30, dpi=100) # Save animation.
+        #self.animation.save('rov_formation.mp4', writer='ffmpeg', fps=30, dpi=100) # Save animation.
         # Plot animation.
         plt.tight_layout()
         plt.show()
