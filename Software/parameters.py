@@ -31,7 +31,7 @@ class Parameters:
             steps -> Number of simulation steps.
             c1 -> Control gain for Lyapunov's barrier function.
             c2 -> Control gain for control input (u).
-            gamma -> Positive gain for velocity offset regarding double integrator agents.
+            wn -> Filters' natural frequency.
             v_max -> Maximum velocity a robot can reach.
             a_max -> Maximum acceleration a robot can reach.
             d_max -> Threshold for Connectivity Maintenance.
@@ -47,11 +47,11 @@ class Parameters:
                  mode_dynamics = 1,
                  dt = 0.01,
                  steps = 1000,
-                 c1 = 1.0,
+                 c1 = 3.0,
                  c2 = 1.0,
-                 gamma = 1.0,
+                 wn = 30.0,
                  v_max = 100,
-                 a_max = 200,
+                 a_max = 50,
                  d_max = 50.0,
                  d_min = 5.0,
                  R = 20,
@@ -66,7 +66,7 @@ class Parameters:
         self.steps = steps
         self.c1 = c1
         self.c2 = c2
-        self.gamma = gamma
+        self.wn = wn
         self.v_max = v_max
         self.a_max = a_max
         self.d_max = d_max
@@ -74,7 +74,7 @@ class Parameters:
         self.R = R
         self.l = l
         self.counter = 0
-        
+
         # Generate random graph and compute distance between agents and all usefull information.
         self.x, self.A, self.E, self.NE, self.dist = generate_random_connected_graph(self.N, self.dim, self.d_max, self.d_min, self.l, self.mode_graph)
         plot_graph_from_adjacency(self.x, self.A, self.mode_graph)
@@ -121,6 +121,9 @@ class Parameters:
             if i:
                 self.target_dist[i] = np.linalg.norm(self.relative_pos_desired[i, 0]) # Calculate the target distance (from desired offsets).
 
+        self.x_lf = np.zeros((self.N, self.dim))
+        self.ẋ_lf = np.zeros((self.N, self.dim))
+
     @staticmethod
     def function_arguments():
         """Creates a Parameters instance using command line arguments."""
@@ -134,11 +137,11 @@ class Parameters:
         parser.add_argument('--dynamics', type=int, default=1, help='Dynamics (0: Single, 1: Double)')
         parser.add_argument('--dt', type=float, default=0.01, help='Size of simulation steps')
         parser.add_argument('--steps', type=int, default=1000, help='Number of simulation steps')
-        parser.add_argument('--c1', type=float, default=1.0, help='Barrier function gain')
+        parser.add_argument('--c1', type=float, default=3.0, help='Barrier function gain')
         parser.add_argument('--c2', type=float, default=1.0, help='Control gain')
-        parser.add_argument('--gamma', type=float, default=1.0, help='Velocity offset gain')
+        parser.add_argument('--wn', type=float, default=30.0, help='Natural frequency')
         parser.add_argument('--v_max', type=int, default=100, help='Maximum velocity')
-        parser.add_argument('--a_max', type=int, default=200, help='Maximum acceleration')
+        parser.add_argument('--a_max', type=int, default=50, help='Maximum acceleration')
         parser.add_argument('--d_max', type=int, default=50, help='Connectivity Maintenance threshold')
         parser.add_argument('--d_min', type=int, default=5, help='Collision Avoidance threshold')       
         parser.add_argument('--R', type=int, default=20.0, help='Formation radius')
@@ -158,7 +161,7 @@ class Parameters:
             steps=args.steps,
             c1=args.c1,
             c2=args.c2,
-            gamma=args.gamma,
+            wn=args.wn,
             v_max=args.v_max,
             a_max=args.a_max,
             d_max=args.d_max,
