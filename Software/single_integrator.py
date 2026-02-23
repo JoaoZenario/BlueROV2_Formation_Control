@@ -66,7 +66,6 @@ class single_integrator:
 
     #* Function to compute each agent's velocity in the exact moment with connectivity maintenance.
     def velocity_connectivity_maintenance(self, params, u):
-        delta_k = params.d_max**2
         # Generalized.
         for i in range(1, params.N):
             # Initialize velocity vectors.
@@ -100,7 +99,6 @@ class single_integrator:
         # Generalized.
         for i in range(1, params.N):
             # Initialize velocity vectors.
-            agent_i_velocity = np.zeros(params.dim)
             v_tilde = np.zeros(params.dim)
             v_star = np.zeros(params.dim)
             u_head = np.zeros(params.dim)
@@ -113,7 +111,9 @@ class single_integrator:
                     # Lyapunov barrier functions for connectivity maintenance and collision avoidance throughout the whole trajectory.
                     # max() is used to prevent division by zero if robots touch the limit.
                     # Connectivity Maintenance - Equation 3.81 and Collision Avoidance - Equation 5.8 and 5.9
-                    W_grad = ((1 / (max(params.d_max**2 - np.sum(z_k**2), 1e-2))) - (1 / (max(np.sum(z_k**2) - params.d_min**2, 1e-2))))* z_k
+                    W_conn = 1 / (max(params.d_max**2 - np.sum(z_k**2), 1e-2))
+                    W_coll = 1 / (max(np.sum(z_k**2) - params.d_min**2, 1e-2))
+                    W_grad = (W_conn - W_coll) * z_k
                     v_star -= params.c1 * W_grad # Virtual control. The Incidence Matrix (Eik) is already being take into account in the if statement (Adjacency matrix).
 
             # It's crucial to add adjent's j velocity to the velocity that agent i would initially need to achieve the desired pose,
@@ -125,3 +125,33 @@ class single_integrator:
             if u_i > params.v_max:
                 u[i] *= params.v_max / u_i
         return u
+
+    #* Function to compute each agent's orientation in order to keep their "leader" in the field-of-view.
+    def compute_yaw_fov(self, params):
+        current_fov_errors = [0.0] # Leader has no FOV error
+
+        for i in range(1, params.N):
+            # 1. Calculate direction to leader (Target)
+            vec_to_leader = params.x[0] - params.x[i]
+            target_yaw = np.arctan2(vec_to_leader[1], vec_to_leader[0])
+            
+            # 2. Calculate current angular error (alpha_k)
+            # Normalizes error between -pi and pi
+            alpha_k = (target_yaw - params.yaw[i] + np.pi) % (2 * np.pi) - np.pi
+            
+            # 3. Compute the Barrier Term
+            # As alpha_k -> delta_alpha, the denominator -> 0, and the gain -> infinity
+            # We use a safety epsilon (1e-3) to prevent division by zero
+            W_fov = 1 / (max(params.delta_alpha**2 - alpha_k**2, 1e-2))
+            
+            # 4. Control Law: P-control + Barrier-Push
+            # c_fov is a weight you should add to your params (e.g., params.c_fov = 0.5)
+            yaw_rate = params.kp_yaw * alpha_k + (params.c3 * W_fov * alpha_k)
+            
+            # 5. Apply update
+            params.yaw[i] += yaw_rate * params.dt
+            
+            # Store in degrees for the animation/plot
+            current_fov_errors.append(np.degrees(alpha_k))
+            
+        return current_fov_errors

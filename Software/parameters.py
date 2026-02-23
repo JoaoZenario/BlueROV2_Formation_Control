@@ -25,7 +25,7 @@ class Parameters:
             N -> Number of agents in the system.
             dim -> Simulation dimension (2D or 3D).
             mode_graph -> Graph type, undirected (0) or directed (1).
-            mode_constraints -> Desired constraints (No Constraints(0); Only Connectivity Maintenance(1); Connectivity Maintenance and Collision Avoidance(2)).
+            mode_constraints -> Desired constraints (No Constraints(0); Only Connectivity Maintenance(1); Connectivity Maintenance and Collision Avoidance(2); Connectivity Maintenance, Collision Avoidance and Field of View(3)).
             mode_dynamics -> Dynamics type, single-integrator dynamics (0) or double-integrator dynamics (1).
             dt -> Size of simulation steps.
             steps -> Number of simulation steps.
@@ -43,7 +43,7 @@ class Parameters:
                  N = 10,
                  dim = 3,
                  mode_graph = 1,
-                 mode_constraint = 2,
+                 mode_constraint = 3,
                  mode_dynamics = 1,
                  dt = 0.01,
                  steps = 1000,
@@ -66,6 +66,7 @@ class Parameters:
         self.steps = steps
         self.c1 = c1
         self.c2 = c2
+        self.c3 = 0.5
         self.wn = wn
         self.v_max = v_max
         self.a_max = a_max
@@ -74,10 +75,12 @@ class Parameters:
         self.R = R
         self.l = l
         self.counter = 0
+        self.kp_yaw = 2.0 # Proportional gain for rotation
+        self.delta_alpha = np.radians(45) # FOV limit (45 degrees)
         
         # Generate random graph and compute distance between agents and all usefull information.
         self.x, self.A, self.E, self.NE, self.dist = generate_random_connected_graph(self.N, self.dim, self.d_max, self.d_min, self.l, self.mode_graph)
-        plot_graph_from_adjacency(self.x, self.A, self.mode_graph)
+        #plot_graph_from_adjacency(self.x, self.A, self.mode_graph)
 
         # Colors to distinguish each agent.
         self.colors = [
@@ -91,7 +94,9 @@ class Parameters:
         self.o = np.zeros((self.N, self.dim)) # Offset formation relative to Leader.
         self.v = np.zeros((self.N, self.dim)) # Velocity of all agents.
         self.err_history = [] # Store history of agent's formation error over time.
+        self.fov_history = [] # Store history of agent's FOV over time.
         self.vel_history = [] # Store history of agent's velocity over time.
+        self.yaw = np.zeros(self.N) # Current yaw in radians
 
         if self.mode_dynamics:
             self.accel_history = [] # Store history of agent's acceleration over time.
@@ -134,7 +139,7 @@ class Parameters:
         parser.add_argument('--N', type=int, default=10, help='Number of agents')
         parser.add_argument('--dim', type=int, default=3, help='Dimension (2D or 3D)')
         parser.add_argument('--graph', type=int, default=1, help='Graph type (0: Undirected, 1: Directed)')
-        parser.add_argument('--constraint', type=int, default=2, help='Constraints (0: None, 1: Conn, 2: Both)')
+        parser.add_argument('--constraint', type=int, default=3, help='Constraints (0: None, 1: Conn, 2: Conn & Coll, 3: Conn, Coll & FOV)')
         parser.add_argument('--dynamics', type=int, default=1, help='Dynamics (0: Single, 1: Double)')
         parser.add_argument('--dt', type=float, default=0.01, help='Size of simulation steps')
         parser.add_argument('--steps', type=int, default=1000, help='Number of simulation steps')

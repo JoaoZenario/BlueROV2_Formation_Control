@@ -42,7 +42,7 @@ def main():
         f"Dimension:         {params.dim}D\n"
         f"Dynamics:          {'Double' if params.mode_dynamics else 'Single'} Integrator\n"
         f"Graph Type:        {'Directed' if params.mode_graph else 'Undirected'}\n"
-        f"Constraints:       {['None', 'Connectivity', 'Both'][params.mode_constraint]}\n"
+        f"Constraints:       {['None', 'Connectivity', 'Connectivity & Colllision', 'Connectivity, Collision & Field-of-View'][params.mode_constraint]}\n"
         f"\n--- PHYSICS & CONTROL ---\n"
         f"Time Step (dt):    {params.dt}s ({params.steps} steps)\n"
         f"Gains:             c1={params.c1}, c2={params.c2}, ωn={params.wn if params.mode_dynamics else 'N/A'}\n"
