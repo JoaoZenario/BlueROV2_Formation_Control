@@ -47,15 +47,15 @@ class Parameters:
                  mode_dynamics = 1,
                  dt = 0.01,
                  steps = 1000,
-                 c1 = 3.0,
+                 c1 = 1.0,
                  c2 = 1.0,
-                 wn = 30.0,
-                 v_max = 100,
-                 a_max = 50,
-                 d_max = 50.0,
-                 d_min = 5.0,
-                 R = 20,
-                 l = 100):
+                 wn = 10.0,
+                 v_max = 1.0,
+                 a_max = 1.0,
+                 d_max = 5.0,
+                 d_min = 0.5,
+                 R = 2.0,
+                 l = 5.0):
 
         self.N = N
         self.dim = dim
@@ -74,7 +74,7 @@ class Parameters:
         self.R = R
         self.l = l
         self.counter = 0
-
+        
         # Generate random graph and compute distance between agents and all usefull information.
         self.x, self.A, self.E, self.NE, self.dist = generate_random_connected_graph(self.N, self.dim, self.d_max, self.d_min, self.l, self.mode_graph)
         plot_graph_from_adjacency(self.x, self.A, self.mode_graph)
@@ -90,6 +90,7 @@ class Parameters:
         self.history = [self.x.copy()] # Store history of agent's pose over time for the trails.
         self.o = np.zeros((self.N, self.dim)) # Offset formation relative to Leader.
         self.v = np.zeros((self.N, self.dim)) # Velocity of all agents.
+        self.err_history = [] # Store history of agent's formation error over time.
         self.vel_history = [] # Store history of agent's velocity over time.
 
         if self.mode_dynamics:
@@ -137,15 +138,15 @@ class Parameters:
         parser.add_argument('--dynamics', type=int, default=1, help='Dynamics (0: Single, 1: Double)')
         parser.add_argument('--dt', type=float, default=0.01, help='Size of simulation steps')
         parser.add_argument('--steps', type=int, default=1000, help='Number of simulation steps')
-        parser.add_argument('--c1', type=float, default=3.0, help='Barrier function gain')
+        parser.add_argument('--c1', type=float, default=1.0, help='Barrier function gain')
         parser.add_argument('--c2', type=float, default=1.0, help='Control gain')
-        parser.add_argument('--wn', type=float, default=30.0, help='Natural frequency')
-        parser.add_argument('--v_max', type=int, default=100, help='Maximum velocity')
-        parser.add_argument('--a_max', type=int, default=50, help='Maximum acceleration')
-        parser.add_argument('--d_max', type=int, default=50, help='Connectivity Maintenance threshold')
-        parser.add_argument('--d_min', type=int, default=5, help='Collision Avoidance threshold')       
-        parser.add_argument('--R', type=int, default=20.0, help='Formation radius')
-        parser.add_argument('--l', type=int, default=100, help='Square side length') 
+        parser.add_argument('--wn', type=float, default=10.0, help='Natural frequency')
+        parser.add_argument('--v_max', type=float, default=1.0, help='Maximum velocity')
+        parser.add_argument('--a_max', type=float, default=1.0, help='Maximum acceleration')
+        parser.add_argument('--d_max', type=float, default=5.0, help='Connectivity Maintenance threshold')
+        parser.add_argument('--d_min', type=float, default=0.5, help='Collision Avoidance threshold')       
+        parser.add_argument('--R', type=float, default=2.0, help='Formation radius')
+        parser.add_argument('--l', type=float, default=5.0, help='Square side length') 
         
         # Parse the arguments from sys.argv
         args = parser.parse_args()
