@@ -9,14 +9,16 @@
 ##########################################################
 
 import numpy as np
-from single_integrator import single_integrator
-from double_integrator import double_integrator
+from single_integrator import Single_integrator
+from double_integrator import Double_integrator
+from constraints import Constraints
 import mpl_toolkits.mplot3d.art3d as art3d
 
-class BROV_Formation(single_integrator, double_integrator):
+class BROV_Formation(Single_integrator, Double_integrator, Constraints):
     def __init__(self):
-        single_integrator.__init__(self)
-        double_integrator.__init__(self)
+        Single_integrator.__init__(self)
+        Double_integrator.__init__(self)
+        Constraints.__init__(self)
 
     #* Function to update the pose of each agent after the step (moving at u acceleration for dt time).
     def update_step(self, frame, params, animator):
@@ -27,37 +29,24 @@ class BROV_Formation(single_integrator, double_integrator):
         u = np.zeros_like(params.x) # u will store each agent's acceleration.
         current_errors = []
         current_fov_errors = [0.0] * params.N
+        L = 0.7 # Length of the FOV line.
 
         for i in range(params.N):
             if i == 0:
                 current_errors.append(0.0)
             else:
-                # Target = Leader Position + Desired Relative Offset from Leader
+                # Target = Leader Position + Desired Relative Offset from Leader.
                 target_pos = params.x[0] + params.relative_pos_desired[i, 0]
                 dist_err = np.linalg.norm(params.x[i] - target_pos)
-                # Normalize by formation radius R (avoid division by zero)
+                # Normalize by formation radius R.
                 percent_err = (dist_err / max(params.R, 0.1)) * 100
                 current_errors.append(percent_err)
 
-                # Calculate the angle for the plot
-                vec_to_leader = params.x[0] - params.x[i]
-                angle_to_leader = np.arctan2(vec_to_leader[1], vec_to_leader[0])
-                ang_err = (angle_to_leader - params.yaw[i] + np.pi) % (2 * np.pi) - np.pi
-                current_fov_errors[i] = np.degrees(ang_err)
-
         if params.mode_dynamics:
-            u = self.leader_acceleration(params, u)
-
-            match params.mode_constraint:
-                case 0:
-                    u = self.acceleration_no_constraints(params, u)
-                case 1:
-                    u = self.acceleration_connectivity_maintenance(params, u)
-                case 2:
-                    u = self.acceleration_connectivity_maintenance_and_collision_avoidance(params, u)
-                case 3:
-                    u = self.acceleration_connectivity_maintenance_and_collision_avoidance(params, u)
-                    current_fov_errors = self.compute_yaw_fov(params)
+            u = self.leader_acceleration(params, u) # Leader acceleration.
+            u = self.compute_acceleration(params, u) # Every other agent acceleration.
+            
+            if params.fov: current_fov_errors = self.field_of_view(params) # Apply Field-of-View constraint.
 
             params.v += u * params.dt # Update velocities (v̇ = u <=> v = u * dt).
             
@@ -77,19 +66,11 @@ class BROV_Formation(single_integrator, double_integrator):
             params.accel_history.append(current_accels)
             accel_hist_np = np.array(params.accel_history)
         else:
-            u = self.leader_velocity(params, u)
-
-            match params.mode_constraint:
-                case 0:
-                    u = self.velocity_no_constraints(params, u)
-                case 1:
-                    u = self.velocity_connectivity_maintenance(params, u)
-                case 2:
-                    u = self.velocity_connectivity_maintenance_and_collision_avoidance(params, u)
-                case 3:
-                    u = self.velocity_connectivity_maintenance_and_collision_avoidance(params, u)
-                    current_fov_errors = self.compute_yaw_fov(params)
+            u = self.leader_velocity(params, u) # Leader velocity.
+            u = self.compute_velocity(params, u) # Every other agent velocity.
             
+            if params.fov: current_fov_errors = self.field_of_view(params) # Apply Field-of-View constraint.
+
             params.x += u * params.dt # Update positions (ẋ = u <=> x = u * dt).
 
             # Store velocity of each agent over time for the animation.
@@ -101,9 +82,10 @@ class BROV_Formation(single_integrator, double_integrator):
         # Store velocity of each agent over time for the animation.
         params.vel_history.append(current_speeds)
         vel_hist_np = np.array(params.vel_history)
-        # Store FOV error for each agent over time for the simulation.
-        params.fov_history.append(current_fov_errors)
-        fov_hist_np = np.array(params.fov_history)   
+        if params.fov:
+            # Store FOV error for each agent over time for the simulation.
+            params.fov_history.append(current_fov_errors)
+            fov_hist_np = np.array(params.fov_history)   
 
 
         params.history.append(params.x.copy()) # Add agent's latest pose to history.
@@ -123,28 +105,29 @@ class BROV_Formation(single_integrator, double_integrator):
             animator.trails[i].set_data(history_np[:, i, 0], history_np[:, i, 1]) # For x and y.
             # Velocity.
             animator.vel_lines[i].set_data(time_axis, vel_hist_np[:, i]) # Update velocity animation.
-            # Shadow:
-            animator.fov_err_lines[i].set_data(time_axis, fov_hist_np[:, i])
 
-            L = 0.7 # Length of the FOV line
-            shadow = animator.shadow
+            # Field of view shadow:
+            if params.fov:
+                animator.fov_err_lines[i].set_data(time_axis, fov_hist_np[:, i])
 
-            for l in range(shadow):
-                # Calculate intermediate angles from 0 to delta_alpha
-                fraction = (l + 1) / shadow
-                alpha_l = params.yaw[i] + (params.delta_alpha * fraction)
-                alpha_r = params.yaw[i] - (params.delta_alpha * fraction)
+                for l in range(animator.shadow):
+                    # Calculate intermediate angles from 0 to delta_alpha
+                    fraction_l = (l + 1) / animator.shadow
+                    fraction_r = l / (animator.shadow - 1)
 
-                p_l = params.x[i] + np.array([L * np.cos(alpha_l), L * np.sin(alpha_l), 0])
-                p_r = params.x[i] + np.array([L * np.cos(alpha_r), L * np.sin(alpha_r), 0])
+                    alpha_l = params.yaw[i] + (params.delta_alpha * fraction_l)
+                    alpha_r = params.yaw[i] - (params.delta_alpha * fraction_r)
 
-                # Left lines: indices 0 to shadow-1
-                animator.fov_lines[i][l].set_data([params.x[i, 0], p_l[0]], [params.x[i, 1], p_l[1]])
-                animator.fov_lines[i][l].set_3d_properties([params.x[i, 2], p_l[2]])
+                    p_l = params.x[i] + np.array([L * np.cos(alpha_l), L * np.sin(alpha_l), 0])
+                    p_r = params.x[i] + np.array([L * np.cos(alpha_r), L * np.sin(alpha_r), 0])
 
-                # Right lines: indices shadow to 2*shadow-1
-                animator.fov_lines[i][l + shadow].set_data([params.x[i, 0], p_r[0]], [params.x[i, 1], p_r[1]])
-                animator.fov_lines[i][l + shadow].set_3d_properties([params.x[i, 2], p_r[2]])
+                    # Left lines
+                    animator.fov_lines[i][l].set_data([params.x[i, 0], p_l[0]], [params.x[i, 1], p_l[1]])
+                    animator.fov_lines[i][l].set_3d_properties([params.x[i, 2], p_l[2]])
+
+                    # Right lines
+                    animator.fov_lines[i][l + animator.shadow].set_data([params.x[i, 0], p_r[0]], [params.x[i, 1], p_r[1]])
+                    animator.fov_lines[i][l + animator.shadow].set_3d_properties([params.x[i, 2], p_r[2]])
 
             if params.mode_dynamics:
                 speed = np.linalg.norm(params.v[i]) # Compute the speed using the Euclidean norm: |v| = √(u_x² + u_y² + u_z²).  
@@ -178,39 +161,39 @@ class BROV_Formation(single_integrator, double_integrator):
         animator.telemetry_text.set_text(stats) # Store the statistics for the animation.
                         
         # Axis limits.
-        # FOV.
-        if len(params.fov_history) > 0:
-            # Look only at the current frame's errors for all agents
-            current_frame_errors = fov_hist_np[-1, :]
-            
-            # Find the spread of the current errors
-            frame_min = np.min(current_frame_errors)
-            frame_max = np.max(current_frame_errors)
-            
-            # Define the boundary we want to see (the constraint limits)
-            limit = np.degrees(params.delta_alpha)
-            
-            # The y-axis will now tightly fit the current errors OR the limits,
-            # whichever is larger at this specific moment.
-            y_bottom = min(frame_min - 2, -limit - 2)
-            y_top = max(frame_max + 2, limit + 2)
-            
-            animator.ax_fov.set_ylim(y_bottom, y_top)
-        animator.ax_fov.set_xlim(0, 10)
         # Error.
-        animator.ax_err.set_xlim(0, 10)
+        animator.ax_err.set_xlim(0, params.steps * params.dt)
         animator.ax_err.set_ylim(0, max(20, np.max(err_hist_np) if len(err_hist_np) > 0 else 100))
         # Distance.
-        animator.ax_dist.set_xlim(0, 10)
+        animator.ax_dist.set_xlim(0, params.steps * params.dt)
         animator.ax_dist.set_ylim(0, max(current_max_dist, params.d_max) * 1.05)
         # Velocity.
-        animator.ax_vel.set_xlim(0, 10)
+        animator.ax_vel.set_xlim(0, params.steps * params.dt)
         animator.ax_vel.set_ylim(0, params.v_max * 1.05)
+        # Acceleration.
         if params.mode_dynamics:
-            # Acceleration.
-            animator.ax_accel.set_xlim(0, max(2, current_time))
+            animator.ax_accel.set_xlim(0, params.steps * params.dt)
             animator.ax_accel.set_ylim(0, params.a_max * 1.05)
+        # FOV.
+        if params.fov:
+            if len(params.fov_history) > 0:
+                # Look only at the current frame's errors for all agents.
+                current_frame_errors = fov_hist_np[-1, :]
+                
+                # Find the spread of the current errors.
+                frame_min = np.min(current_frame_errors)
+                frame_max = np.max(current_frame_errors)
+                
+                # Define the boundary we want to see (the constraint limits).
+                limit = np.degrees(params.delta_alpha)
+                
+                # The y-axis will now tightly fit the current errors OR the limits, whichever is larger at this specific moment.
+                y_bottom = min(frame_min - 2, -limit - 2)
+                y_top = max(frame_max + 2, limit + 2)
+            
+            animator.ax_fov.set_xlim(0, params.steps * params.dt)
+            animator.ax_fov.set_ylim(y_bottom, y_top)
 
-        flat_fov = [line for pair in animator.fov_lines for line in pair]
+        animator.fig_telemetry.canvas.draw_idle()
 
-        return animator.dots + animator.trails + animator.dist_lines + animator.err_lines + flat_fov + animator.fov_err_lines + [animator.telemetry_text] # For efficiency, returning these variables is crucial since they were the only ones that changed.
+        return animator.dots + animator.trails + animator.dist_lines + animator.err_lines + [animator.telemetry_text] # For efficiency, returning these variables is crucial since they were the only ones that changed.

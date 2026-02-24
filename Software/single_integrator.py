@@ -9,14 +9,15 @@
 ##########################################################
 
 import numpy as np
+from constraints import Constraints
 
-class single_integrator:
+class Single_integrator(Constraints):
     def __init__(self):
+        Constraints.__init__(self)
         pass
     
     #* Function to set leader's velocity throughout the whole simulation.
     def leader_velocity(self, params, u):
-        """
         if params.dim == 2:
             if (params.counter < 0.5 * params.steps):
                 u[0, 0] = 1  # Leader's x speed.
@@ -33,70 +34,17 @@ class single_integrator:
                 u[0, 0] = -10.0 # Leader's x speed.
                 u[0, 1] = -10.0 # Leader's y speed.
                 u[0, 2] = 5.0   # Leader's z speed.
-        """
         u[0] = [0, 0, 0]
-        return u
+        u_norm = np.linalg.norm(u[0]) # Magnitude.
 
-
-    #* Function to compute each agent's velocity in the exact moment without constraints.
-    # The agents are in an initial pose (with a certain relative pose to each others)
-    # and the goal is the agents moving to a pose where the relative pose to each others is the desired one (relative_pose_desired). 
-    def velocity_no_constraints(self, params, u):
-        # Generalized.
-        for i in range(1, params.N):
-            # Initialize velocity vectors.
-            agent_i_velocity = np.zeros(params.dim)
-            u_head = np.zeros(params.dim)
-            for j in range(params.N):
-                if params.A[i, j] == 1:
-                    relative_pos_real = params.x[i] - params.x[j] # Computes the real relative pose.
-                    agent_i_velocity -= (relative_pos_real - params.relative_pos_desired[i, j]) # Add the contribution of neighbor j to agent i's velocity.
-                    u_position = params.c2 * agent_i_velocity # Velocity needed for agent i to reach desired position.
-                    u_head = u[j].copy() # Store agent's j (edge's head) velocity vector.
-            # It's crucial to add agent's j velocity to the velocity that agent i would initially need to achieve the desired pose,
-            # because agent j is in movement and that must be taken into account.
-            u[i] = u_position + u_head # Agent's i velocity.
-            u_i = np.linalg.norm(u[i]) # Magnitude.
-
-            # Set a max velocity to become closer to reality.
-            if u_i > params.v_max:
-                u[i] *= params.v_max / u_i
+        # Set a max velocity to become closer to reality.
+        if u_norm > params.v_max:
+            u[0] *= params.v_max / u_norm
 
         return u
 
-    #* Function to compute each agent's velocity in the exact moment with connectivity maintenance.
-    def velocity_connectivity_maintenance(self, params, u):
-        # Generalized.
-        for i in range(1, params.N):
-            # Initialize velocity vectors.
-            agent_i_velocity = np.zeros(params.dim)
-            v_tilde = np.zeros(params.dim)
-            v_star = np.zeros(params.dim)
-            u_head = np.zeros(params.dim)
-            for j in range(params.N):
-                if params.A[i, j] == 1:
-                    z_k = params.x[i] - params.x[j] # Computes the real relative pose.
-                    # Velocity needed for agent i to reach desired position, by adding the contribution of neighbor j to agent i's velocity.
-                    v_tilde += (z_k - params.relative_pos_desired[i, j])
-                    u_head = u[j].copy() # Store agent's j (edge's head) velocity vector.
-
-                    # Lyapunov barrier functions for connectivity maintenance throughout the whole trajectory.
-                    W_grad = (1 / (max(params.d_max**2 - np.sum(z_k**2), 1e-2))) * z_k # max() is used to prevent division by zero if robots touch the limit. Equation 3.81.
-                    v_star -= params.c1 * W_grad # Virtual control. The Incidence Matrix (Eik) is already being take into account in the if statement (Adjacency matrix).
-
-            # It's crucial to add adjent's j velocity to the velocity that agent i would initially need to achieve the desired pose,
-            # because agent j is in movement and that must be taken into account.
-            u[i] = -(params.c2 * v_tilde) + v_star + u_head # Agent's i velocity. Equation 3.82.
-            u_i = np.linalg.norm(u[i]) # Magnitude.
-
-            # Set a max velocity in order to don't explode with the simulation.
-            if u_i > params.v_max:
-                u[i] *= params.v_max / u_i
-        return u
-
-    #* Function to compute each agent's velocity in the exact moment with connectivity maintenance and collision avoidance.
-    def velocity_connectivity_maintenance_and_collision_avoidance(self, params, u):
-        # Generalized.
+    #* Function to compute each agent's velocity in the exact moment.
+    def compute_velocity(self, params, u):
         for i in range(1, params.N):
             # Initialize velocity vectors.
             v_tilde = np.zeros(params.dim)
@@ -105,53 +53,21 @@ class single_integrator:
             for j in range(params.N):
                 if params.A[i, j] == 1:
                     z_k = params.x[i] - params.x[j] # Computes the real relative pose.
-                    # Velocity needed for agent i to reach desired position, by adding the contribution of neighbor j to agent i's velocity.
-                    v_tilde += (z_k - params.relative_pos_desired[i, j])
+                    v_tilde -= (z_k - params.relative_pos_desired[i, j]) # Add the contribution of neighbor j to agent i's velocity.
                     u_head = u[j].copy() # Store agent's j (edge's head) velocity vector.
                     # Lyapunov barrier functions for connectivity maintenance and collision avoidance throughout the whole trajectory.
-                    # max() is used to prevent division by zero if robots touch the limit.
+                    # max() is used to prevent division by zero, if robots touch the limit, and also to prevent the opposite behvior when agents are initially out of the raidus threshold.
                     # Connectivity Maintenance - Equation 3.81 and Collision Avoidance - Equation 5.8 and 5.9
-                    W_conn = 1 / (max(params.d_max**2 - np.sum(z_k**2), 1e-2))
-                    W_coll = 1 / (max(np.sum(z_k**2) - params.d_min**2, 1e-2))
+                    W_conn = self.connectivity_maintenance(params, z_k) if params.conn else 0 # Connectivity Maintenance Constraint.
+                    W_coll = self.collision_avoidance(params, z_k) if params.coll else 0 # Collision Avoidance Constraint.
                     W_grad = (W_conn - W_coll) * z_k
                     v_star -= params.c1 * W_grad # Virtual control. The Incidence Matrix (Eik) is already being take into account in the if statement (Adjacency matrix).
 
-            # It's crucial to add adjent's j velocity to the velocity that agent i would initially need to achieve the desired pose,
-            # because agent j is in movement and that must be taken into account.
-            u[i] = -(params.c2 * v_tilde) + v_star + u_head # Agent's i velocity. Equation 3.82.
+            u[i] = params.c2 * v_tilde + v_star + u_head
             u_i = np.linalg.norm(u[i]) # Magnitude.
 
-            # Set a max velocity in order to don't explode with the simulation.
+            # Saturation. Set a max velocity to become closer to reality.
             if u_i > params.v_max:
                 u[i] *= params.v_max / u_i
+
         return u
-
-    #* Function to compute each agent's orientation in order to keep their "leader" in the field-of-view.
-    def compute_yaw_fov(self, params):
-        current_fov_errors = [0.0] # Leader has no FOV error
-
-        for i in range(1, params.N):
-            # 1. Calculate direction to leader (Target)
-            vec_to_leader = params.x[0] - params.x[i]
-            target_yaw = np.arctan2(vec_to_leader[1], vec_to_leader[0])
-            
-            # 2. Calculate current angular error (alpha_k)
-            # Normalizes error between -pi and pi
-            alpha_k = (target_yaw - params.yaw[i] + np.pi) % (2 * np.pi) - np.pi
-            
-            # 3. Compute the Barrier Term
-            # As alpha_k -> delta_alpha, the denominator -> 0, and the gain -> infinity
-            # We use a safety epsilon (1e-3) to prevent division by zero
-            W_fov = 1 / (max(params.delta_alpha**2 - alpha_k**2, 1e-2))
-            
-            # 4. Control Law: P-control + Barrier-Push
-            # c_fov is a weight you should add to your params (e.g., params.c_fov = 0.5)
-            yaw_rate = params.kp_yaw * alpha_k + (params.c3 * W_fov * alpha_k)
-            
-            # 5. Apply update
-            params.yaw[i] += yaw_rate * params.dt
-            
-            # Store in degrees for the animation/plot
-            current_fov_errors.append(np.degrees(alpha_k))
-            
-        return current_fov_errors
