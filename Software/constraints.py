@@ -10,6 +10,7 @@
 
 import numpy as np
 from parameters import Parameters
+from scipy.spatial.transform import Rotation as R
 
 class Constraints:
     def __init__(self):
@@ -24,29 +25,46 @@ class Constraints:
         W_coll = 1 / (max(np.sum(z_k**2) - params.d_min**2, 1e-2))
         return W_coll
 
-    #* Field of View Constraint (assuming agents are only looking at the leader).
+    #* Field of View Constraint (Rectangular/Pyramidal 3D)
     def field_of_view(self, params):
-        fov_err_deg = [0.0] # Leader has no error.
-
+        fov_percent_errors = [0.0]  # Leader placeholder
+        
         for i in range(1, params.N):
-            z_k = params.x[0] - params.x[i] # Vector from agent i to leader (0). 
-            target_yaw = np.arctan2(z_k[1], z_k[0]) # Angle agents have to face the leader.
-            alpha_k = (params.yaw[i] - target_yaw + np.pi) % (2 * np.pi) - np.pi # Current angular error alpha_k (normalized -pi to pi)
-    
-            # Barrier Function (Equation 4.80).
-            # Denominator goes to zero as error approaches the delta_alpha limit.
-            W_fov = 1 / max(params.delta_alpha**2 - alpha_k**2, 1e-2)
+            # 1. Relative bearing in Body Frame
+            p_diff = params.x[0] - params.x[i]
+            d_ij = np.linalg.norm(p_diff)
+            rot_i = R.from_quat(params.q[i]).as_matrix()
+            beta_ij = rot_i.T @ (p_diff / d_ij)
             
-            # Control Law (Kinematic Yaw Rate).
-            # Negative sign ensures agents are moving opposite to the error.
-            yaw_rate = -(params.kp_yaw * alpha_k + params.c3 * W_fov * alpha_k)
+            # 2. Extract angular offsets
+            alpha_h = np.arctan2(beta_ij[1], beta_ij[0]) # Horizontal
+            alpha_v = np.arctan2(beta_ij[2], beta_ij[0]) # Vertical
             
-            # Saturation. Set max rotation rate to become closer to reality.
-            if abs(yaw_rate) > params.r_max:
-                yaw_rate = np.sign(yaw_rate) * params.r_max
+            # 3. SQUARED Barrier Functions
+            W_h = 1 / (max(params.theta_max_x**2 - alpha_h**2, 1e-2))
+            W_v = 1 / (max(params.theta_max_y**2 - alpha_v**2, 1e-2))
 
-            params.yaw[i] += yaw_rate * params.dt # Update the yaw state.
-            params.yaw[i] = (params.yaw[i] + np.pi) % (2 * np.pi) - np.pi # Wrap yaw to [-pi, pi] to prevent the variable from growing to infinity.
-            fov_err_deg.append(np.degrees(alpha_k)) # Store in degrees for the plot.
+            # 4. Control Commands
+            omega_cmd = np.array([
+                0.0,                           
+                -(params.kp_pitch * alpha_v) - (params.c3_v * W_v * alpha_v), 
+                (params.kp_yaw * alpha_h) + (params.c3_h * W_h * alpha_h)  
+            ])
+
+            omega_max = 1
+            mag = np.linalg.norm(omega_cmd)
+            if mag > omega_max:
+                omega_cmd *= omega_max / mag
+
+            self.update_quaternion(i, omega_cmd, params.dt, params)
+
+            # 5. Calculate Normalized Error for the Plot
+            # We check which axis is closer to its limit
+            err_h = np.abs(alpha_h) / params.theta_max_x
+            err_v = np.abs(alpha_v) / params.theta_max_y
             
-        return fov_err_deg
+            # Total error is the maximum of the two, converted to percentage
+            total_err_percent = max(err_h, err_v) * 100
+            fov_percent_errors.append(total_err_percent)
+
+        return fov_percent_errors

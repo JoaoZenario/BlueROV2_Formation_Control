@@ -93,9 +93,44 @@ class Parameters:
         self.kp_yaw = kp_yaw
         self.delta_alpha = delta_alpha
 
+        self.theta_max_x = np.radians(45) # 45 degrees left/right
+        self.theta_max_y = np.radians(30) # 30 degrees up/down
+        self.c3_h = 0.5 # Horizontal barrier gain
+        self.c3_v = 0.5 # Vertical barrier gain
+        self.kp_pitch = 1.0
+
+
+        self.x = np.array([
+            [3.39655962, 0.29968507, 4.17778228],
+            [3.30965058, 1.82937878, 0.09709306],
+            [4.46324661, 3.24636054, 2.73822641],
+            [0.13316123, 1.37122818, 4.99218486],
+            [0.04021556, 4.23317497, 2.23731517]
+        ])
+
+        self.A = np.array([
+            [0, 0, 0, 0, 0],
+            [1, 0, 0, 0, 0],
+            [1, 1, 0, 0, 0],
+            [1, 0, 0, 0, 0],
+            [0, 1, 1, 1, 0]
+        ])
+
+        self.E = np.empty((0, 2), dtype=np.int64) 
+
+        self.NE = 0 
+
+        self.dist = np.array([
+            [0.        , 4.35884624, 3.4486285 , 3.53004607, 5.52293408],
+            [4.35884624, 0.        , 3.21157384, 5.85336743, 4.58780908],
+            [3.4486285 , 3.21157384, 0.        , 5.22934886, 4.55937698],
+            [3.53004607, 5.85336743, 5.22934886, 0.        , 3.97349787],
+            [5.52293408, 4.58780908, 4.55937698, 3.97349787, 0.        ]
+        ])
+
         # Generate random graph and compute distance between agents and all usefull information.
-        self.x, self.A, self.E, self.NE, self.dist = generate_random_connected_graph(self.N, self.dim, self.d_max, self.d_min, self.l, self.mode_graph)
-        plot_graph_from_adjacency(self.x, self.A, self.mode_graph)
+        #self.x, self.A, self.E, self.NE, self.dist = generate_random_connected_graph(self.N, self.dim, self.d_max, self.d_min, self.l, self.mode_graph)
+        #plot_graph_from_adjacency(self.x, self.A, self.mode_graph)
 
         # Colors to distinguish each agent.
         self.colors = [
@@ -111,7 +146,9 @@ class Parameters:
         self.err_history = [] # Store history of agent's formation error over time.
         self.fov_history = [] # Store history of agent's FOV over time.
         self.vel_history = [] # Store history of agent's velocity over time.
-        self.yaw = np.zeros(self.N) # Current yaw in radians
+        #self.yaw = np.zeros(self.N) # Current yaw in radians
+        # Create an (N, 4) array to store [x, y, z, w] for each of the N agents
+        self.q = np.tile(np.array([0.0, 0.0, 0.0, 1.0]), (self.N, 1))
 
         if self.mode_dynamics:
             self.accel_history = [] # Store history of agent's acceleration over time.

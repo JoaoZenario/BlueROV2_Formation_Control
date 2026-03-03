@@ -13,6 +13,7 @@ from single_integrator import Single_integrator
 from double_integrator import Double_integrator
 from constraints import Constraints
 import mpl_toolkits.mplot3d.art3d as art3d
+from scipy.spatial.transform import Rotation as R
 
 class BROV_Formation(Single_integrator, Double_integrator, Constraints):
     def __init__(self):
@@ -101,33 +102,48 @@ class BROV_Formation(Single_integrator, Double_integrator, Constraints):
             animator.err_lines[i].set_data(time_axis, err_hist_np[:, i])
             # Update the dots on the plot.
             animator.dots[i].set_data([params.x[i, 0]], [params.x[i, 1]]) # For x and y.
+            animator.dots[i].set_3d_properties([params.x[i, 2]])
             # Stores all time steps of each agent until this moment.
             animator.trails[i].set_data(history_np[:, i, 0], history_np[:, i, 1]) # For x and y.
+            animator.trails[i].set_3d_properties(history_np[:, i, 2])
             # Velocity.
             animator.vel_lines[i].set_data(time_axis, vel_hist_np[:, i]) # Update velocity animation.
 
-            # Field of view shadow:
             if params.fov:
                 animator.fov_err_lines[i].set_data(time_axis, fov_hist_np[:, i])
 
-                for l in range(animator.shadow):
-                    # Calculate intermediate angles from 0 to delta_alpha
-                    fraction_l = (l + 1) / animator.shadow
-                    fraction_r = l / (animator.shadow - 1)
+                # Get the rotation matrix
+                rot_matrix = R.from_quat(params.q[i]).as_matrix()
+                fwd, side, up = rot_matrix[:, 0], rot_matrix[:, 1], rot_matrix[:, 2]
 
-                    alpha_l = params.yaw[i] + (params.delta_alpha * fraction_l)
-                    alpha_r = params.yaw[i] - (params.delta_alpha * fraction_r)
+                # We will draw "N" vertical fans to fill the volume
+                # Divide the shadow lines between horizontal and vertical
+                num_rays = animator.shadow 
+                
+                for l in range(num_rays):
+                    # 1. Horizontal spread factor (-1 to 1)
+                    s_frac = (l / (num_rays - 1)) * 2 - 1
+                    ang_h = params.theta_max_x * s_frac
+                    
+                    # 2. Create the "Left" and "Right" boundary rays of the rectangle
+                    # These go from the top edge to the bottom edge
+                    dx = L * np.tan(ang_h)
+                    dy_max = L * np.tan(params.theta_max_y)
 
-                    p_l = params.x[i] + np.array([L * np.cos(alpha_l), L * np.sin(alpha_l), 0])
-                    p_r = params.x[i] + np.array([L * np.cos(alpha_r), L * np.sin(alpha_r), 0])
+                    # Point at the Top of this vertical strip
+                    p_top = params.x[i] + (fwd * L + side * dx + up * dy_max)
+                    # Point at the Bottom of this vertical strip
+                    p_bottom = params.x[i] + (fwd * L + side * dx - up * dy_max)
 
-                    # Left lines
-                    animator.fov_lines[i][l].set_data([params.x[i, 0], p_l[0]], [params.x[i, 1], p_l[1]])
-                    animator.fov_lines[i][l].set_3d_properties([params.x[i, 2], p_l[2]])
-
-                    # Right lines
-                    animator.fov_lines[i][l + animator.shadow].set_data([params.x[i, 0], p_r[0]], [params.x[i, 1], p_r[1]])
-                    animator.fov_lines[i][l + animator.shadow].set_3d_properties([params.x[i, 2], p_r[2]])
+                    # Set the ray: Line from ROV to Top, then to Bottom, then back to ROV
+                    # This creates a triangle slice for every step in 'l'
+                    animator.fov_lines[i][l].set_data(
+                        [params.x[i, 0], p_top[0], p_bottom[0], params.x[i, 0]], 
+                        [params.x[i, 1], p_top[1], p_bottom[1], params.x[i, 1]]
+                    )
+                    animator.fov_lines[i][l].set_3d_properties(
+                        [params.x[i, 2], p_top[2], p_bottom[2], params.x[i, 2]]
+                    )
 
             if params.mode_dynamics:
                 speed = np.linalg.norm(params.v[i]) # Compute the speed using the Euclidean norm: |v| = √(u_x² + u_y² + u_z²).  
@@ -174,26 +190,53 @@ class BROV_Formation(Single_integrator, Double_integrator, Constraints):
         if params.mode_dynamics:
             animator.ax_accel.set_xlim(0, params.steps * params.dt)
             animator.ax_accel.set_ylim(0, params.a_max * 1.05)
-        # FOV.
-        if params.fov:
-            if len(params.fov_history) > 0:
-                # Look only at the current frame's errors for all agents.
-                current_frame_errors = fov_hist_np[-1, :]
-                
-                # Find the spread of the current errors.
-                frame_min = np.min(current_frame_errors)
-                frame_max = np.max(current_frame_errors)
-                
-                # Define the boundary we want to see (the constraint limits).
-                limit = np.degrees(params.delta_alpha)
-                
-                # The y-axis will now tightly fit the current errors OR the limits, whichever is larger at this specific moment.
-                y_bottom = min(frame_min - 2, -limit - 2)
-                y_top = max(frame_max + 2, limit + 2)
-            
+        # FOV Axis Scaling (Percentage Mode)
+        if params.fov and len(params.fov_history) > 0:
             animator.ax_fov.set_xlim(0, params.steps * params.dt)
-            animator.ax_fov.set_ylim(y_bottom, y_top)
+            
+            # 1. Get the max error of the CURRENT frame only (across all N agents)
+            # fov_hist_np[-1, :] accesses the very last entry in the history
+            current_max_err = np.max(fov_hist_np[-1, :])
+            
+            # 2. Set the top limit to either 120% OR the current max + buffer
+            # This ensures the axis "shrinks" back down if the error improves
+            y_top_inst = max(110, current_max_err + 10)
+            
+            # 3. Apply the limit
+            animator.ax_fov.set_ylim(0, y_top_inst) 
+            animator.ax_fov.set_ylabel("FOV Usage (%)")
 
         animator.fig_telemetry.canvas.draw_idle()
 
         return animator.dots + animator.trails + animator.dist_lines + animator.err_lines + [animator.telemetry_text] # For efficiency, returning these variables is crucial since they were the only ones that changed.
+
+    def update_quaternion(self, i, omega, dt, params):
+        """
+        Updates the quaternion orientation for agent i.
+        omega: [p, q, r] angular velocity vector in body frame
+        """
+        # 1. Get current quaternion [x, y, z, w]
+        q_current = params.q[i]
+        
+        # 2. Convert angular velocity to a quaternion rate of change
+        # We use the standard kinematic formula: dq/dt = 0.5 * q * [0, omega]
+        # In Scipy, we can do this by creating a small rotation vector
+        rotation_vec = omega * dt
+        angle = np.linalg.norm(rotation_vec)
+        
+        if angle > 1e-8:
+            # Create a rotation object from the rotation vector (exponential map)
+            delta_rot = R.from_rotvec(rotation_vec)
+            
+            # Current orientation as a Scipy Rotation object
+            q_obj_current = R.from_quat(q_current)
+            
+            # 3. Apply the rotation: q_new = q_current * delta_q
+            # Note: Order matters! Body-frame rotation is applied on the right.
+            q_new_obj = q_obj_current * delta_rot
+            
+            # 4. Extract back to array and ensure normalization
+            params.q[i] = q_new_obj.as_quat()
+        
+        # Normalize to prevent numerical drift (crucial for long simulations)
+        params.q[i] /= np.linalg.norm(params.q[i])

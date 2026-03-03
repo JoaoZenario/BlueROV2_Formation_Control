@@ -67,9 +67,7 @@ class Animation:
         if params.fov:
             self.ax_fov = self.fig_telemetry.add_subplot(gs[2, :])
             self.ax_fov.set_title("FOV Angular Error (deg)")
-            fov_lim = np.degrees(params.delta_alpha)
-            self.ax_fov.axhline(y=fov_lim, color='r', ls='--')
-            self.ax_fov.axhline(y=-fov_lim, color='darkred', ls='--')
+            self.ax_fov.axhline(y=100, color='r', ls='--')
             self.fov_err_lines = []
 
         # Agents and their path representation.
