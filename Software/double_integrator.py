@@ -67,7 +67,8 @@ class Double_integrator(Constraints):
             alpha_f, alpha_dot_f = self.command_filter(params, i, alpha_i, params.dt) # Apply command filter.
             z2 = params.v[i] - alpha_f
             u[i] = alpha_dot_f - params.c2 * z2 + z1 # Agent i acceleration. Equation 3.82.
-
+            u[i] -= params.damping * params.v[i]
+            
             # Saturation. Set a max acceleration in order to don't explode with the simulation.
             u_norm = np.linalg.norm(u[i])
             if u_norm > params.a_max:

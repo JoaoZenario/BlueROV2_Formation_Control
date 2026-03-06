@@ -98,6 +98,7 @@ class Parameters:
         self.c3_h = 0.5 # Horizontal barrier gain
         self.c3_v = 0.5 # Vertical barrier gain
         self.kp_pitch = 1.0
+        self.damping = 3.0
 
 
         self.x = np.array([
@@ -146,9 +147,12 @@ class Parameters:
         self.err_history = [] # Store history of agent's formation error over time.
         self.fov_history = [] # Store history of agent's FOV over time.
         self.vel_history = [] # Store history of agent's velocity over time.
-        #self.yaw = np.zeros(self.N) # Current yaw in radians
-        # Create an (N, 4) array to store [x, y, z, w] for each of the N agents
-        self.q = np.tile(np.array([0.0, 0.0, 0.0, 1.0]), (self.N, 1))
+        self.history_np = np.empty((0, self.N, self.dim))
+        self.vel_hist_np = np.empty((0, self.N))
+        self.accel_hist_np = np.empty((0, self.N))
+        self.err_hist_np = np.empty((0, self.N))
+        self.fov_hist_np = np.empty((0, self.N))
+        self.q = np.tile(np.array([0.0, 0.0, 0.0, 1.0]), (self.N, 1)) # Create an (N, 4) array to store [x, y, z, w] for each of the N agents
 
         if self.mode_dynamics:
             self.accel_history = [] # Store history of agent's acceleration over time.

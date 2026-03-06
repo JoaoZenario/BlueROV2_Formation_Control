@@ -27,7 +27,7 @@ class Constraints:
 
     #* Field of View Constraint (Rectangular/Pyramidal 3D)
     def field_of_view(self, params):
-        fov_percent_errors = [0.0]  # Leader placeholder
+        fov_errors = [[0.0, 0.0]]  # Leader placeholder
         
         for i in range(1, params.N):
             # 1. Relative bearing in Body Frame
@@ -57,14 +57,6 @@ class Constraints:
                 omega_cmd *= omega_max / mag
 
             self.update_quaternion(i, omega_cmd, params.dt, params)
+            fov_errors.append([np.degrees(alpha_h), np.degrees(alpha_v)])
 
-            # 5. Calculate Normalized Error for the Plot
-            # We check which axis is closer to its limit
-            err_h = np.abs(alpha_h) / params.theta_max_x
-            err_v = np.abs(alpha_v) / params.theta_max_y
-            
-            # Total error is the maximum of the two, converted to percentage
-            total_err_percent = max(err_h, err_v) * 100
-            fov_percent_errors.append(total_err_percent)
-
-        return fov_percent_errors
+        return fov_errors
