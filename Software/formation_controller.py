@@ -52,43 +52,32 @@ class BROV_Formation(Single_integrator, Double_integrator, Constraints):
 
         return animator.dots + animator.trails + animator.dist_lines + animator.err_lines + [animator.telemetry_text] # For efficiency, returning these variables is crucial since they were the only ones that changed.
 
+    #* Function to update the quaternion orientation for agent i (omega: [p, q, r] angular velocity vector in body frame)
     def update_quaternion(self, i, omega, dt, params):
-        """
-        Updates the quaternion orientation for agent i.
-        omega: [p, q, r] angular velocity vector in body frame
-        """
-        # 1. Get current quaternion [x, y, z, w]
+        # Get current quaternion [x, y, z, w].
         q_current = params.q[i]
         
-        # 2. Convert angular velocity to a quaternion rate of change
-        # We use the standard kinematic formula: dq/dt = 0.5 * q * [0, omega]
-        # In Scipy, we can do this by creating a small rotation vector
+        # Convert angular velocity to a quaternion rate of change.
         rotation_vec = omega * dt
         angle = np.linalg.norm(rotation_vec)
         
         if angle > 1e-8:
-            # Create a rotation object from the rotation vector (exponential map)
-            delta_rot = R.from_rotvec(rotation_vec)
-            
-            # Current orientation as a Scipy Rotation object
-            q_obj_current = R.from_quat(q_current)
-            
-            # 3. Apply the rotation: q_new = q_current * delta_q
-            # Note: Order matters! Body-frame rotation is applied on the right.
-            q_new_obj = q_obj_current * delta_rot
-            
-            # 4. Extract back to array and ensure normalization
-            params.q[i] = q_new_obj.as_quat()
+            delta_rot = R.from_rotvec(rotation_vec) # Create a rotation object from the rotation vector (exponential map).
+            q_obj_current = R.from_quat(q_current) # Current orientation as a Scipy Rotation object.
+            q_new_obj = q_obj_current * delta_rot # Apply the rotation: q_new = q_current * delta_q.
+            params.q[i] = q_new_obj.as_quat() # Extract back to array and ensure normalization.
         
-        # Normalize to prevent numerical drift (crucial for long simulations)
+        # Normalize to prevent numerical drift.
         params.q[i] /= np.linalg.norm(params.q[i])
 
+    #* Function to store all agent's pose history.
     def pose_history(self, params):
         # Add agent's latest pose to history.
         params.history.append(params.x.copy())
         params.history_np = np.array(params.history)
         pass
 
+    #* Function to store all agent's velocity history.
     def velocity_history(self, params, u):
         # Store velocity of each agent over time for the animation.
         if params.mode_dynamics:
@@ -100,6 +89,7 @@ class BROV_Formation(Single_integrator, Double_integrator, Constraints):
         params.vel_hist_np = np.array(params.vel_history)
         pass
 
+    #* Function to store all agent's acceleration history.
     def acceleration_history(self, params, u):
         # Store acceleration of each agent over time for the animation.
         current_accels = [np.linalg.norm(a) for a in u]
@@ -107,6 +97,7 @@ class BROV_Formation(Single_integrator, Double_integrator, Constraints):
         params.accel_hist_np = np.array(params.accel_history)
         pass
 
+    #* Function to store all agent's formation error history.
     def formation_error_history(self, params):
         current_errors = []
         # Formation distance error.
@@ -127,6 +118,7 @@ class BROV_Formation(Single_integrator, Double_integrator, Constraints):
         params.err_hist_np = np.array(params.err_history)
         pass
 
+    #* Function to store all agent's field of view error history.
     def fov_error_history(self, params, current_fov_errors):
         # Store FOV error for each agent over time for the simulation.
         params.fov_history.append(current_fov_errors)

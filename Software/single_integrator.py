@@ -55,12 +55,13 @@ class Single_integrator(Constraints):
                     z_k = params.x[i] - params.x[j] # Computes the real relative pose.
                     v_tilde -= (z_k - params.relative_pos_desired[i, j]) # Add the contribution of neighbor j to agent i's velocity.
                     u_head = u[j].copy() # Store agent's j (edge's head) velocity vector.
-                    # Lyapunov barrier functions for connectivity maintenance and collision avoidance throughout the whole trajectory.
-                    # max() is used to prevent division by zero, if robots touch the limit, and also to prevent the opposite behvior when agents are initially out of the raidus threshold.
-                    # Connectivity Maintenance - Equation 3.81 and Collision Avoidance - Equation 5.8 and 5.9
-                    W_conn = self.connectivity_maintenance(params, z_k) if params.conn else 0 # Connectivity Maintenance Constraint.
-                    W_coll = self.collision_avoidance(params, z_k) if params.coll else 0 # Collision Avoidance Constraint.
-                    W_grad = (W_conn - W_coll) * z_k
+
+                    if params.rec: # Recentered Lyapunov barrier function.
+                        W_grad = self.recentered_barrier(params, z_k, i, j)
+                    else: # "Regular" Lyapunov barrier function.
+                        W_conn = self.connectivity_maintenance(params, z_k) if params.conn else 0 # Connectivity Maintenance Constraint.
+                        W_coll = self.collision_avoidance(params, z_k) if params.coll else 0 # Collision Avoidance Constraint.
+                        W_grad = (W_conn - W_coll) * z_k
                     v_star -= params.c1 * W_grad # Virtual control. The Incidence Matrix (Eik) is already being take into account in the if statement (Adjacency matrix).
 
             u[i] = params.c2 * v_tilde + v_star + u_head

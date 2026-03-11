@@ -55,23 +55,31 @@ class Double_integrator(Constraints):
                 if params.A[i, j] == 1:
                     z_k = params.x[i] - params.x[j]
                     z1 -= (z_k - params.relative_pos_desired[i, j]) # Position error.
-                    # Lyapunov barrier functions for connectivity maintenance and collision avoidance throughout the whole trajectory.
-                    # max() is used to prevent division by zero, if robots touch the limit, and also to prevent the opposite behvior when agents are initially out of the raidus threshold.
-                    # Connectivity Maintenance - Equation 3.81 and Collision Avoidance - Equation 5.8 and 5.9
-                    W_conn = self.connectivity_maintenance(params, z_k) if params.conn else 0 # Connectivity Maintenance Constraint.
-                    W_coll = self.collision_avoidance(params, z_k) if params.coll else 0 # Collision Avoidance Constraint.
-                    W_grad = (W_conn - W_coll) * z_k
+
+                    if params.rec: # Recentered Lyapunov barrier function.
+                        W_grad = self.recentered_barrier(params, z_k, i, j)
+                    else: # "Regular" Lyapunov barrier function.
+                        W_conn = self.connectivity_maintenance(params, z_k) if params.conn else 0 # Connectivity Maintenance Constraint.
+                        W_coll = self.collision_avoidance(params, z_k) if params.coll else 0 # Collision Avoidance Constraint.
+                        W_grad = (W_conn - W_coll) * z_k
                     z1 -= W_grad # Sum everything (contribution agent j has on agent i).
 
             alpha_i = params.c1 * z1 # Compute the virtual control.
             alpha_f, alpha_dot_f = self.command_filter(params, i, alpha_i, params.dt) # Apply command filter.
             z2 = params.v[i] - alpha_f
             u[i] = alpha_dot_f - params.c2 * z2 + z1 # Agent i acceleration. Equation 3.82.
-            u[i] -= params.damping * params.v[i]
             
+            u_v_barrier = self.velocity_saturation(params, i)
+            u[i] -= params.c3 * u_v_barrier
+
             # Saturation. Set a max acceleration in order to don't explode with the simulation.
             u_norm = np.linalg.norm(u[i])
             if u_norm > params.a_max:
                 u[i] *= params.a_max / u_norm
                 
         return u
+
+    #* Function to apply barrier function in order to control/limit the velocity in double agent systems, since we can't to saturate it directly given that the acceleration is the input.
+    def velocity_saturation(self, params, i):
+        u_v_barrier = (1 / (max(params.v_max**2 - np.sum(params.v[i]**2), 1e-2))) * params.v[i]
+        return u_v_barrier
