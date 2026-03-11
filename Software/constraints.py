@@ -10,43 +10,89 @@
 
 import numpy as np
 from parameters import Parameters
+from scipy.spatial.transform import Rotation as R
 
 class Constraints:
     def __init__(self):
         pass
     
     #* Connectivity Maintenance Constraint.
-    def connectivity_maintenance(self, params, z_k):
-        W_conn = 1 / (max(params.d_max**2 - np.sum(z_k**2), 1e-2))
+    def connectivity_maintenance(self, params, d):
+        # Lyapunov barrier functions throughout the whole trajectory.
+        # Connectivity Maintenance - Equation 3.81.
+        # max() is used to prevent division by zero, if robots touch the limit, and also to prevent the opposite behvior when agents are initially out of the raidus threshold.
+        W_conn = 1 / (max(params.d_max**2 - np.sum(d**2), 1e-2))
         return W_conn
+
     #* Collision Avoidance Constraint.
-    def collision_avoidance(self, params, z_k):
-        W_coll = 1 / (max(np.sum(z_k**2) - params.d_min**2, 1e-2))
+    def collision_avoidance(self, params, d):
+        # Lyapunov barrier functions throughout the whole trajectory.
+        # Collision Avoidance - Equation 5.8 and 5.9.
+        # max() is used to prevent division by zero, if robots touch the limit, and also to prevent the opposite behvior when agents are initially out of the raidus threshold.
+        W_coll = 1 / (max(np.sum(d**2) - params.d_min**2, 1e-2))
         return W_coll
 
-    #* Field of View Constraint (assuming agents are only looking at the leader).
+    #* Recentered Lyapunov Barrier Function.
+    def recentered_barrier(self, params, z_k, i, j):
+        target_vector = params.relative_pos_desired[i, j]
+
+        # Connectivity Maintenance Constraint.
+        if params.conn:
+            W_conn_current = self.connectivity_maintenance(params, z_k)
+            W_conn_target = self.connectivity_maintenance(params, target_vector)
+        else:
+            W_conn_current = 0
+            W_conn_target = 0
+        # Collision Avoidance Constraint.
+        if params.coll:
+            W_coll_current = self.collision_avoidance(params, z_k)
+            W_coll_target = self.collision_avoidance(params, target_vector)
+        else:
+            W_coll_current = 0
+            W_coll_target = 0
+        W_grad_current = W_conn_current - W_coll_current # Gradient at current position.
+        W_grad_target = W_conn_target - W_coll_target # Gradient at target position
+        
+        # For recentered barrier function: ∇B(z) = ∇B̄(z) - ∇B̄(0)
+        return (W_grad_current - W_grad_target) * z_k
+
+    #* Field of View Constraint (Rectangular/Pyramidal 3D).
     def field_of_view(self, params):
-        fov_err_deg = [0.0] # Leader has no error.
-
+        fov_errors = [[0.0, 0.0]]  # Leader placeholder (has no error).
+        
         for i in range(1, params.N):
-            z_k = params.x[0] - params.x[i] # Vector from agent i to leader (0). 
-            target_yaw = np.arctan2(z_k[1], z_k[0]) # Angle agents have to face the leader.
-            alpha_k = (params.yaw[i] - target_yaw + np.pi) % (2 * np.pi) - np.pi # Current angular error alpha_k (normalized -pi to pi)
-    
-            # Barrier Function (Equation 4.80).
-            # Denominator goes to zero as error approaches the delta_alpha limit.
-            W_fov = 1 / max(params.delta_alpha**2 - alpha_k**2, 1e-2)
-            
-            # Control Law (Kinematic Yaw Rate).
-            # Negative sign ensures agents are moving opposite to the error.
-            yaw_rate = -(params.kp_yaw * alpha_k + params.c3 * W_fov * alpha_k)
-            
-            # Saturation. Set max rotation rate to become closer to reality.
-            if abs(yaw_rate) > params.r_max:
-                yaw_rate = np.sign(yaw_rate) * params.r_max
+            # Find the target, which is the lowest ID agent i is connected to. This is no longer needed since each agent is connected to only one other agent.
+            connected_indices = np.where(params.A[i] == 1)[0]
+            target_idx = connected_indices[0]
 
-            params.yaw[i] += yaw_rate * params.dt # Update the yaw state.
-            params.yaw[i] = (params.yaw[i] + np.pi) % (2 * np.pi) - np.pi # Wrap yaw to [-pi, pi] to prevent the variable from growing to infinity.
-            fov_err_deg.append(np.degrees(alpha_k)) # Store in degrees for the plot.
+            # Relative bearing in Body Frame.
+            p_diff = params.x[target_idx] - params.x[i]
+            d_ij = np.linalg.norm(p_diff)
+            rot_i = R.from_quat(params.q[i]).as_matrix()
+            beta_ij = rot_i.T @ (p_diff / d_ij)
             
-        return fov_err_deg
+            # Extract angular offsets.
+            alpha_h = np.arctan2(beta_ij[1], beta_ij[0]) # Horizontal.
+            alpha_v = np.arctan2(beta_ij[2], beta_ij[0]) # Vertical.
+            
+            # Barrier functions.
+            W_h = 1 / (max(params.theta_max_x**2 - alpha_h**2, 1e-2)) # Horizontal.
+            W_v = 1 / (max(params.theta_max_y**2 - alpha_v**2, 1e-2)) # Veritcal.
+
+            # Control Commands.
+            omega_cmd = np.array([
+                0.0,                           
+                -(params.kp_pitch * alpha_v) - (params.c4_v * W_v * alpha_v), 
+                (params.kp_yaw * alpha_h) + (params.c4_h * W_h * alpha_h)  
+            ])
+
+            # Saturate rotation speed/rate.
+            omega_max = 1
+            mag = np.linalg.norm(omega_cmd)
+            if mag > omega_max:
+                omega_cmd *= omega_max / mag
+
+            self.update_quaternion(i, omega_cmd, params.dt, params)
+            fov_errors.append([np.degrees(alpha_h), np.degrees(alpha_v)])
+
+        return fov_errors

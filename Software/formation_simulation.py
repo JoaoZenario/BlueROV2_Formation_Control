@@ -10,6 +10,7 @@
 from formation_controller import BROV_Formation 
 from parameters import Parameters
 from plot_animator import Animation
+import numpy as np
 
 class Simulation:
     #* Function to setup all classes in order to run the simulation.
@@ -45,12 +46,13 @@ def main():
         f"Connectivity Maintenance:       {['Off', 'On'][params.conn]}\n"
         f"Collision Avoidance:       {['Off', 'On'][params.coll]}\n"
         f"Field of View:       {['Off', 'On'][params.fov]}\n"
+        f"Recentered Barrier:       {['Off', 'On'][params.rec]}\n"
         f"\n--- PHYSICS & CONTROL ---\n"
         f"Time Step (dt):    {params.dt}s ({params.steps} steps)\n"
-        f"Gains:             c1={params.c1}, c2={params.c2}, c3={params.c3}, ωn={params.wn if params.mode_dynamics else 'N/A'}, kp_yaw={params.kp_yaw}\n"
+        f"Gains:             c1={params.c1}, c2={params.c2}, c3={params.c3}, c4_h={params.c4_h}, c4_v={params.c4_v}, ωn={params.wn if params.mode_dynamics else 'N/A'}, kp_yaw={params.kp_yaw}, kp_pitch={params.kp_pitch}\n"
         f"Limits:            v_max={params.v_max}m/s, a_max={params.a_max}m/s², r_max={params.r_max}rad/s\n"
         f"\n--- GEOMETRY ---\n"
-        f"Thresholds:        d_max={params.d_max}m, d_min={params.d_min}m, delta_alpha={params.delta_alpha}°\n"
+        f"Thresholds:        d_max={params.d_max}m, d_min={params.d_min}m, theta_max_x={np.degrees(params.theta_max_x)}°, theta_max_y={np.degrees(params.theta_max_y)}°\n"
         f"Formation:         Radius={params.R}m, Spawn Area={params.l}m²"
     )
     print(dashboard)

@@ -11,8 +11,11 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation
 from mpl_toolkits.mplot3d import Axes3D
+from scipy.spatial.transform import Rotation as R
+import matplotlib.colors as mcolors
 
-class Animation:
+class Animation():
+    #* Function to define and itialize the simulation and all plots.
     def __init__(self, params):
         # Formation Workspace.
         self.fig_space = plt.figure("Formation Workspace", figsize=(8, 8))
@@ -28,6 +31,14 @@ class Animation:
             self.ax.set_zlim(-10, 10)
             self.ax.set_zlabel('Z (m)')
         self.ax.set_title("ROV Physical Formation")
+
+        # Edge dynamic representation in simulation.
+        self.line_edges = []
+        for i in range(params.N):
+            for j in range(params.N):
+                if params.A[i, j] == 1:
+                    line, = self.ax.plot([], [], [], lw=1.5, alpha=0.8) # Create a line for each edge.
+                    self.line_edges.append(line) # Store the indices and the line object.
 
         # Performance Telemetry.
         self.fig_telemetry = plt.figure("System Telemetry", figsize=(12, 10))
@@ -63,31 +74,43 @@ class Animation:
             self.ax_accel.axhline(y=params.a_max, color='k', ls='--', alpha=0.5)
             self.accel_lines = []
 
-        # 5. Field of View plot.
+        # Field of View plot.
         if params.fov:
-            self.ax_fov = self.fig_telemetry.add_subplot(gs[2, :])
-            self.ax_fov.set_title("FOV Angular Error (deg)")
-            fov_lim = np.degrees(params.delta_alpha)
-            self.ax_fov.axhline(y=fov_lim, color='r', ls='--')
-            self.ax_fov.axhline(y=-fov_lim, color='darkred', ls='--')
-            self.fov_err_lines = []
+            self.ax_fov_x = self.fig_telemetry.add_subplot(gs[2, 0])
+            self.ax_fov_x.set_title("Horizontal FOV Error (deg)")
+            
+            self.ax_fov_y = self.fig_telemetry.add_subplot(gs[2, 1])
+            self.ax_fov_y.set_title("Vertical FOV Error (deg)")
+            
+            self.ax_fov_x.axhline(y=np.degrees(params.theta_max_x), color='r', ls='--')
+            self.ax_fov_x.axhline(y=-np.degrees(params.theta_max_x), color='r', ls='--')
+            
+            self.ax_fov_y.axhline(y=np.degrees(params.theta_max_y), color='r', ls='--')
+            self.ax_fov_y.axhline(y=-np.degrees(params.theta_max_y), color='r', ls='--')
+            
+            self.fov_x_lines = []
+            self.fov_y_lines = []
 
         # Agents and their path representation.
         self.dots = [self.ax.plot([], [], 'o', color=params.colors[i], markersize=5, label=f"ROV {i+1}")[0] for i in range(params.N)] # Create N dots, one for each agent.
-        self.trails = [self.ax.plot([], [], '-', color=params.colors[i], alpha=0.2)[0] for i in range(params.N)] # Create the path trail for each agent.
+        self.trails = [self.ax.plot([], [], '-', color=params.colors[i], alpha=0.1)[0] for i in range(params.N)] # Create the path trail for each agent.
 
-        # Create the legend on the 3D axis
+        # Create the legend on the 3D axis.
         self.ax.legend(loc='upper right', shadow=True, fontsize='x-small')
 
         if params.fov:
-            self.shadow = 25 # number of lines for each side (to simulate shadow).
+            self.shadow = 50 # number of lines for each side (to simulate field of view).
             self.fov_lines = []
-
+        
+        # Plot label.
         for i in range(params.N):
             self.err_lines.append(self.ax_err.plot([], [], color=params.colors[i], label=f'ROV {i+1}')[0])
             self.vel_lines.append(self.ax_vel.plot([], [], color=params.colors[i], label=f'ROV {i+1}')[0])
-            if params.fov: self.fov_err_lines.append(self.ax_fov.plot([], [], color=params.colors[i], label=f'ROV {i+1}')[0])
-            if params.mode_dynamics: self.accel_lines.append(self.ax_accel.plot([], [], color=params.colors[i], label=f'ROV {i+1}')[0])
+            if params.fov:
+                self.fov_x_lines.append(self.ax_fov_x.plot([], [], color=params.colors[i], label=f'ROV {i+1}')[0])
+                self.fov_y_lines.append(self.ax_fov_y.plot([], [], color=params.colors[i], label=f'ROV {i+1}')[0])
+            if params.mode_dynamics:
+                self.accel_lines.append(self.ax_accel.plot([], [], color=params.colors[i], label=f'ROV {i+1}')[0])
             
             # Distance lines based on adjacency.
             for j in range(params.N):
@@ -110,9 +133,171 @@ class Animation:
         self.ax_err.legend(loc='upper right', fontsize='xx-small', ncol=2)
         self.ax_vel.legend(loc='upper right', fontsize='xx-small', ncol=2)
         self.ax_dist.legend(loc='upper right', fontsize='xx-small', ncol=2)
-        if params.fov: self.ax_fov.legend(loc='upper right', fontsize='xx-small', ncol=2)
-        if params.mode_dynamics: self.ax_accel.legend(loc='upper right', fontsize='xx-small', ncol=2)
+        if params.fov:
+            self.ax_fov_x.legend(loc='upper right', fontsize='xx-small', ncol=2)
+            self.ax_fov_y.legend(loc='upper right', fontsize='xx-small', ncol=2)
+        if params.mode_dynamics:
+            self.ax_accel.legend(loc='upper right', fontsize='xx-small', ncol=2)
 
+    #* Function to gather and store the data in order to update the simulation and plots. 
+    def plot_data(self, frame, params):
+        edge_count = 0
+        current_max_dist = 0
+        current_time = frame * params.dt
+        stats = f"Time: {current_time:5.2f}s\n"
+        stats += "-" * 15 + "\n"
+        time_axis = np.linspace(0, current_time, len(params.vel_history))
+
+        cmap = plt.get_cmap('RdYlGn_r') # Get colormap for the edge representation (smooth transition from red to yellow to green, based on distance).
+
+        for i in range(params.N):
+            # Update the dots on the plot.
+            self.dots[i].set_data([params.x[i, 0]], [params.x[i, 1]]) # x and y.
+            if params.dim == 3:
+                self.dots[i].set_3d_properties([params.x[i, 2]]) # z.
+            # Update the trails on the plot.
+            self.trails[i].set_data(params.history_np[:, i, 0], params.history_np[:, i, 1]) # x and y.
+            if params.dim == 3:
+                self.trails[i].set_3d_properties(params.history_np[:, i, 2]) # z.
+            # Distance (to leader).
+            if i: # Skip if i=0 (leader).
+                # Calculate actual distance to leader using the same method (Euclidean distance): d = √[(u_x_i - u_x_0)² + (u_y_i - u_y_0)² + (u_z_i - u_z_0)²].
+                dist_to_leader = np.linalg.norm(params.x[i] - params.x[0])
+                stats += f"Distance to Leader: {dist_to_leader:5.2f}m (Target: {params.target_dist[i]:5.2f}m)\n"
+
+            # Distance (edge length).
+            for j in range(params.N):
+                if params.A[i, j] == 1:
+                    z_k_hist = params.history_np[:, i, :] - params.history_np[:, j, :]
+                    dist_hist = np.linalg.norm(z_k_hist, axis=1)
+                    self.dist_lines[edge_count].set_data(time_axis, dist_hist[-len(time_axis):])
+
+                    d = dist_hist[-1]
+
+                    # Update workspace line position.
+                    pos_i = params.x[i]
+                    pos_j = params.x[j]
+                    self.line_edges[edge_count].set_data([pos_i[0], pos_j[0]], [pos_i[1], pos_j[1]])
+                    if params.dim == 3:
+                        self.line_edges[edge_count].set_3d_properties([pos_i[2], pos_j[2]])
+
+                    # Smooth color transition.
+                    if d > params.R:
+                        color = (d - params.R) / (params.d_max - params.R)
+                    else:
+                        color = (params.R - d) / (params.R - params.d_min)
+                    
+                    color = np.clip(color, 0, 1)
+                    self.line_edges[edge_count].set_color(cmap(color))
+
+                    edge_count += 1
+
+                    # Save lenght od biggest edge on that moment to update the edge distance plot. 
+                    if d > current_max_dist:
+                        current_max_dist = d
+            # Velocity.
+            self.vel_lines[i].set_data(time_axis, params.vel_hist_np[:, i])
+            if params.mode_dynamics:
+                speed = np.linalg.norm(params.v[i]) # Compute the speed using the Euclidean norm: |v| = √(u_x² + u_y² + u_z²).  
+            else:
+                speed = np.linalg.norm(u[i]) # Compute the speed using the Euclidean norm: |v| = √(u_x² + u_y² + u_z²).
+            stats += f"ROV {i+1} Vel: {speed:5.2f} m/s\n"
+            # Acceleration.
+            if params.mode_dynamics:
+                self.accel_lines[i].set_data(time_axis, params.accel_hist_np[:, i])
+            # Formation error.
+            self.err_lines[i].set_data(time_axis, params.err_hist_np[:, i])
+            # Field of View error.
+            if params.fov:
+                err_x = params.fov_hist_np[:, i, 0] 
+                err_y = params.fov_hist_np[:, i, 1]
+                
+                self.fov_x_lines[i].set_data(time_axis, err_x)
+                self.fov_y_lines[i].set_data(time_axis, err_y)
+                self.fov_shadow(params, i)
+
+        self.telemetry_text.set_text(stats) # Store the statistics for the animation.
+        
+        return current_max_dist
+
+    #* Function to simulate simulate the field of view of each agent throughout the whole simulation.
+    def fov_shadow(self, params, i):
+        L = 0.7 # Length of the FOV line.
+        # Get the rotation matrix
+        rot_matrix = R.from_quat(params.q[i]).as_matrix()
+        fwd, side, up = rot_matrix[:, 0], rot_matrix[:, 1], rot_matrix[:, 2]
+        
+        for l in range(self.shadow):
+            # Evenly spread all rays across the whole horizontal lenght.
+            s_frac = (l / (self.shadow - 1)) * 2 - 1
+            ang_h = params.theta_max_x * s_frac
+            
+            # Create the "Left" and "Right" boundary rays of the rectangle, from the top edge to the bottom edge.
+            dx = L * np.tan(ang_h)
+            dy_max = L * np.tan(params.theta_max_y)
+
+            # Point at the Top of this vertical strip.
+            p_top = params.x[i] + (fwd * L + side * dx + up * dy_max)
+            # Point at the Bottom of this vertical strip.
+            p_bottom = params.x[i] + (fwd * L + side * dx - up * dy_max)
+
+            # Set the ray.
+            self.fov_lines[i][l].set_data(
+                [params.x[i, 0], p_top[0], p_bottom[0], params.x[i, 0]], 
+                [params.x[i, 1], p_top[1], p_bottom[1], params.x[i, 1]]
+            )
+            self.fov_lines[i][l].set_3d_properties(
+                [params.x[i, 2], p_top[2], p_bottom[2], params.x[i, 2]]
+            )
+
+    #* Function to set plot size, according to variable limits and/or variable values during the simulation. 
+    def plot_size(self, params, current_max_dist):
+        # Axis limits.
+        # Distance.
+        self.ax_dist.set_xlim(0, params.steps * params.dt)
+        self.ax_dist.set_ylim(0, max(current_max_dist, params.d_max) * 1.05)
+        # Velocity.
+        self.ax_vel.set_xlim(0, params.steps * params.dt)
+        if params.vel_hist_np.size > 0:
+            # Look at the maximum velocity in the current iteration across all agents (for velocity plot).
+            current_max_vel = np.max(params.vel_hist_np[-1, :])
+            self.ax_vel.set_ylim(0, max(params.v_max * 1.05, current_max_vel * 1.2))
+        # Acceleration.
+        if params.mode_dynamics:
+            self.ax_accel.set_xlim(0, params.steps * params.dt)
+            self.ax_accel.set_ylim(0, params.a_max * 1.05)
+        # Error.
+        if params.err_hist_np.size > 0:
+            self.ax_err.set_xlim(0, params.steps * params.dt)
+            # Look at the maximum formation error in the current iteration across all agents (for error plot).
+            current_max_err = np.max(params.err_hist_np[-1, :])
+            self.ax_err.set_ylim(0, max(10.0, current_max_err * 1.2))
+        # FOV (Horizontal and Vertical).
+        if params.fov and params.fov_hist_np.size > 0:
+            self.ax_fov_x.set_xlim(0, params.steps * params.dt)
+            self.ax_fov_y.set_xlim(0, params.steps * params.dt)
+            
+            limit_deg_x = np.degrees(params.theta_max_x)
+            limit_deg_y = np.degrees(params.theta_max_y)
+
+            # Current max angle error.
+            current_max_abs_x = np.max(np.abs(params.fov_hist_np[-1, :, 0]))
+            current_max_abs_y = np.max(np.abs(params.fov_hist_np[-1, :, 1]))
+
+            win_x = max(limit_deg_x + 5, current_max_abs_x * 1.1)
+            self.ax_fov_x.set_ylim(-win_x, win_x)
+
+            win_y = max(limit_deg_y + 5, current_max_abs_y * 1.1)
+            self.ax_fov_y.set_ylim(-win_y, win_y)
+
+        self.fig_telemetry.canvas.draw_idle()
+
+    #* Function to call other functions that handle the simulation and plots.
+    def plot_handle(self, frame, params):
+        current_max_dist = self.plot_data(frame, params)
+        self.plot_size(params, current_max_dist)
+
+    #* Function to show, and save (if desired), the whole animation.
     def plot_animation(self, params, controller):
         self.animation = FuncAnimation(self.fig_space, controller.update_step, 
                                        frames=params.steps, fargs=(params, self), 

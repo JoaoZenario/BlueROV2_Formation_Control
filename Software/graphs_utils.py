@@ -112,7 +112,7 @@ def is_connected_scipy(A: np.ndarray) -> bool:
 
 
 def generate_random_connected_graph(
-    N: int, d: int, d_max: float, d_min: float, l: float, mode: bool
+    N: int, d: int, d_max: float, d_min: float, l: float, mode: bool, fov: bool
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, int]:
     """
     Generates a random proximity graph embedded in (R^d)^N.
@@ -123,7 +123,8 @@ def generate_random_connected_graph(
         d_max (float): Maximum distance for two nodes to be neighbors (radius).
         d_min (float): Minimum distance for two nodes to be neighbors.
         l (float): Length of the side of the square/hypercube [0, l]^d.
-        mode (str): Mode to specifiy which graph is desired, directed (1) or undirected (0).
+        mode (bool): Mode to specifiy which graph is desired, directed (1) or undirected (0).
+        fov (bool): Field of View constraint (Off(0); On (1)).
 
     Returns:
         Tuple[np.ndarray, np.ndarray, np.ndarray, int]:
@@ -165,17 +166,32 @@ def generate_random_connected_graph(
         A = (dist <= d_max) & (dist >= d_min)
         A = A.astype(int) # Convert boolean to integer (0 or 1)
 
-        if mode:
-            # In order to transform in a directed system (strictily lower triangular matrix).
-            # This guarantees that a spanning tree exists and therefore that the system is stable.
-            A = np.tril(A, k=-1) 
+        # In order to transform in a directed system (strictily lower triangular matrix).
+        # This guarantees that a spanning tree exists and therefore that the system is stable.
+        A = np.tril(A, k=-1) 
 
-            for i in range(1, N):
-                # If the sum of row i is 0, this agent follows no one.
-                if np.sum(A[i, :]) == 0:
-                    # Connect to any random agent with a lower index.
+        for i in range(1, N):
+            # Check how many agents agent i is following.
+            connected_parents = np.where(A[i, :] == 1)[0]
+            
+            # Field of View constraint is applied.
+            if fov:
+                # Agent i is connected to more that one agent.
+                if len(connected_parents) > 1:
+                    # An agent must be connected to only one other agent because it might not be able to "look" at two or more agents simultaneously.
+                    # Keep the lowest ID.
+                    best_parent = np.min(connected_parents)
+                    A[i, :] = 0 # Clear all connections for this row.
+                    A[i, best_parent] = 1 # Keep only one.
+                    
+            # Digraph case.
+            if mode:
+                # Safety Check: If an agent follows no one, it's lost. It must follow someone to stay in formation.
+                if len(connected_parents) == 0:
+                    # Connect to a random agent with a lower index.
                     random_parent = np.random.randint(0, i)
                     A[i, random_parent] = 1
+                    
 
         # 4. Check Connectivity
         # MATLAB: connected = all( all( A^N ) ) is an algebraic check for connectivity
