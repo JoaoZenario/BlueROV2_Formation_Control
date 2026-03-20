@@ -7,6 +7,7 @@
 #                                                        #     
 ##########################################################
 
+import math
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation
@@ -17,6 +18,7 @@ import matplotlib.colors as mcolors
 class Animation():
     #* Function to define and itialize the simulation and all plots.
     def __init__(self, params):
+        #self.plot_barrier(params)
         # Formation Workspace.
         self.fig_space = plt.figure("Formation Workspace", figsize=(8, 8))
         proj = '3d' if params.dim == 3 else None
@@ -130,7 +132,7 @@ class Animation():
 
         # Standardize legends across all telemetry plots.  
         self.ax_dist.legend(loc='upper right', fontsize='xx-small', ncol=2)
-        self.ax_err.legend(loc='upper right', fontsize='xx-small', ncol=2)
+        #self.ax_err.legend(loc='upper right', fontsize='xx-small', ncol=2)
         self.ax_vel.legend(loc='upper right', fontsize='xx-small', ncol=2)
         self.ax_dist.legend(loc='upper right', fontsize='xx-small', ncol=2)
         if params.fov:
@@ -140,7 +142,7 @@ class Animation():
             self.ax_accel.legend(loc='upper right', fontsize='xx-small', ncol=2)
 
     #* Function to gather and store the data in order to update the simulation and plots. 
-    def plot_data(self, frame, params):
+    def plot_data(self, frame, params, u):
         edge_count = 0
         current_max_dist = 0
         current_time = frame * params.dt
@@ -293,16 +295,97 @@ class Animation():
         self.fig_telemetry.canvas.draw_idle()
 
     #* Function to call other functions that handle the simulation and plots.
-    def plot_handle(self, frame, params):
-        current_max_dist = self.plot_data(frame, params)
+    def plot_handle(self, frame, params, u):
+        current_max_dist = self.plot_data(frame, params, u)
         self.plot_size(params, current_max_dist)
+
+
+    def get_barrier(self, params, d):
+        d_sq = d**2
+        epsilon = 1e-6
+        den_conn = np.maximum(params.d_max**2 - d_sq, epsilon)
+        den_coll = np.maximum(d_sq - params.d_min**2, epsilon)
+        b_conn = np.log(params.d_max**2 / den_conn)
+        b_coll = np.log(params.d_min**2 / den_coll)
+        
+        return 0.5 * (b_conn + b_coll)
+
+    def plot_barrier(self, params):
+        # --- 1. Common Data Setup ---
+        grid_limit = 1.5 * params.d_max
+        res = 100
+        
+        d_range = np.linspace(-grid_limit, grid_limit, 1000)
+        B_vals_2d = self.get_barrier(params, np.abs(d_range))
+        
+        V_target = self.get_barrier(params, params.R)
+        grad_mag = (self.get_barrier(params, params.R + 0.01) - 
+                    self.get_barrier(params, params.R - 0.01)) / 0.02
+        
+        # --- FIGURE 1: 2D Potential Slice ---
+        plt.figure("2D Slice", figsize=(8, 6))
+        B_rec_2d = B_vals_2d - V_target - grad_mag * (np.abs(d_range) - params.R)
+        
+        plt.plot(d_range, B_vals_2d, '--', color='gray', label='Regular Barrier', alpha=0.6)
+        plt.plot(d_range, B_rec_2d, 'b', label='Recentered Barrier', linewidth=2)
+        plt.axvline(params.R, color='g', linestyle=':', label='Target Distance')
+        plt.axvline(-params.R, color='g', linestyle=':')
+        plt.axvline(params.d_max, color='r', linestyle=':', label='Δk')
+        plt.axvline(-params.d_max, color='r', linestyle=':')
+        plt.axvline(params.d_min, color='y', linestyle=':', label='δk')
+        plt.axvline(-params.d_min, color='y', linestyle=':')
+
+        plt.ylim(-2, 15)
+        plt.title("2D Potential Cross-section ($x_2 = 0$)")
+        plt.xlabel("Relative Coordinate $x_1$ (m)")
+        plt.ylabel("Potential Value")
+        plt.legend()
+        plt.grid(alpha=0.3)
+        # REMOVED plt.show() from here
+
+        # --- Meshgrid for 3D Plots ---
+        x = np.linspace(-grid_limit, grid_limit, res)
+        y = np.linspace(-grid_limit, grid_limit, res)
+        X, Y = np.meshgrid(x, y)
+        Dist = np.sqrt(X**2 + Y**2)
+        V_3d = self.get_barrier(params, Dist)
+
+        # --- FIGURE 2: 3D Normal Barrier ---
+        fig2 = plt.figure("3D Regular", figsize=(8, 7))
+        ax2 = fig2.add_subplot(111, projection='3d')
+        ax2.plot_surface(X, Y, V_3d, cmap='viridis', edgecolor='none', alpha=0.9)
+        ax2.set_title("3D Regular Barrier (Symmetric)")
+        ax2.set_zlim(-2, 20)
+        ax2.view_init(elev=20, azim=-45)
+        # REMOVED plt.show() from here
+
+        # --- FIGURE 3: 3D Recentered Barrier ---
+        term_linear = grad_mag * (X - params.R)
+        V_rec_3d = V_3d - V_target - term_linear
+
+        fig3 = plt.figure("3D Recentered", figsize=(8, 7))
+        ax3 = fig3.add_subplot(111, projection='3d')
+        ax3.plot_surface(X, Y, V_rec_3d, cmap='plasma', edgecolor='none', alpha=0.9)
+        
+        # TARGET DOT LOGIC
+        ax3.scatter([params.R], [0], [0], color='red', s=150, 
+                   label='Desired Equilibrium', edgecolors='black', zorder=5)
+        
+        ax3.set_title("3D Recentered Barrier (Tilted)")
+        ax3.set_zlim(-5, 25)
+        ax3.view_init(elev=20, azim=-60)
+        ax3.legend()
+
+        # --- FINAL SHOW ---
+        # Calling this once at the very end opens all active figures at the same time
+        plt.show()
 
     #* Function to show, and save (if desired), the whole animation.
     def plot_animation(self, params, controller):
+        #"""
         self.animation = FuncAnimation(self.fig_space, controller.update_step, 
                                        frames=params.steps, fargs=(params, self), 
                                        interval=10, blit=False, repeat=False)
-
         #self.animation.save('rov_formation_3d.mp4', writer='ffmpeg', fps=30, dpi=150)
-
         plt.show()
+        #"""

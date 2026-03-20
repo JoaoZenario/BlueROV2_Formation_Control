@@ -54,7 +54,7 @@ class Double_integrator(Constraints):
             for j in range(params.N):
                 if params.A[i, j] == 1:
                     z_k = params.x[i] - params.x[j]
-                    z1 -= (z_k - params.relative_pos_desired[i, j]) # Position error.
+                    nominal_error = (z_k - params.relative_pos_desired[i, j])
 
                     if params.rec: # Recentered Lyapunov barrier function.
                         W_grad = self.recentered_barrier(params, z_k, i, j)
@@ -62,7 +62,8 @@ class Double_integrator(Constraints):
                         W_conn = self.connectivity_maintenance(params, z_k) if params.conn else 0 # Connectivity Maintenance Constraint.
                         W_coll = self.collision_avoidance(params, z_k) if params.coll else 0 # Collision Avoidance Constraint.
                         W_grad = (W_conn - W_coll) * z_k
-                    z1 -= W_grad # Sum everything (contribution agent j has on agent i).
+
+                    z1 -= (nominal_error + W_grad) # Sum everything (contribution agent j has on agent i).
 
             alpha_i = params.c1 * z1 # Compute the virtual control.
             alpha_f, alpha_dot_f = self.command_filter(params, i, alpha_i, params.dt) # Apply command filter.
@@ -81,5 +82,5 @@ class Double_integrator(Constraints):
 
     #* Function to apply barrier function in order to control/limit the velocity in double agent systems, since we can't to saturate it directly given that the acceleration is the input.
     def velocity_saturation(self, params, i):
-        u_v_barrier = (1 / (max(params.v_max**2 - np.sum(params.v[i]**2), 1e-2))) * params.v[i]
+        u_v_barrier = (1 / (max(params.v_max**2 - np.sum(params.v[i]**2), 1e-6))) * params.v[i]
         return u_v_barrier

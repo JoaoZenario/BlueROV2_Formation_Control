@@ -45,10 +45,12 @@ class BROV_Formation(Single_integrator, Double_integrator, Constraints):
 
         self.pose_history(params)
         self.velocity_history(params, u)
-        self.acceleration_history(params, u)
+        if params.mode_dynamics:
+            self.acceleration_history(params, u)
         self.formation_error_history(params)
-        self.fov_error_history(params, current_fov_errors)
-        animator.plot_handle(frame, params)
+        if params.fov:
+            self.fov_error_history(params, current_fov_errors)
+        animator.plot_handle(frame, params, u)
 
         return animator.dots + animator.trails + animator.dist_lines + animator.err_lines + [animator.telemetry_text] # For efficiency, returning these variables is crucial since they were the only ones that changed.
 
@@ -116,6 +118,25 @@ class BROV_Formation(Single_integrator, Double_integrator, Constraints):
         # Store formation distance error of each agent over time for the animation.
         params.err_history.append(current_errors)
         params.err_hist_np = np.array(params.err_history)
+
+        if params.counter == params.steps: # Use == for comparison
+            # Extract the last row (current state at step 2000)
+            final_errors_percent = params.err_hist_np[-1, :]
+            
+            # Calculate average error (excluding the leader at index 0)
+            final_mean_error = np.mean(final_errors_percent[1:]) 
+
+            print("-" * 30)
+            print(f"Formation Error Results (Step {params.counter})")
+            print("-" * 30)
+            
+            for i in range(params.N):
+                # Use [i] to get the specific agent's error
+                print(f"Agent {i}: {final_errors_percent[i]:.4f}%")
+                
+            print("-" * 30)
+            print(f"Final Average Formation Error: {final_mean_error:.4f}%")
+            print("-" * 30)
         pass
 
     #* Function to store all agent's field of view error history.

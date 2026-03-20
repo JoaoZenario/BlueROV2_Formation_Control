@@ -20,21 +20,16 @@ class Single_integrator(Constraints):
     def leader_velocity(self, params, u):
         if params.dim == 2:
             if (params.counter < 0.5 * params.steps):
-                u[0, 0] = 1  # Leader's x speed.
-                u[0, 1] = 4 # Leader's y speed.
+                u[0] = np.array([0.5, 0.7])
             else:
-                u[0, 0] = -1.0 # Leader's x speed.
-                u[0, 1] = -1.0 # Leader's y speed.
+                u[0] = np.array([-0.3, -0.9])
+                
         if params.dim == 3:
             if (params.counter < 0.5 * params.steps):
-                u[0, 0] = 5  # Leader's x speed.
-                u[0, 1] = 20 # Leader's y speed.
-                u[0, 2] = 5  # Leader's z speed.
+                u[0] = np.array([0.5, 0.5, -0.3]) 
             else:
-                u[0, 0] = -10.0 # Leader's x speed.
-                u[0, 1] = -10.0 # Leader's y speed.
-                u[0, 2] = 5.0   # Leader's z speed.
-        u[0] = [0, 0, 0]
+                u[0] = np.array([-0.1, 0.2, 0.3])
+
         u_norm = np.linalg.norm(u[0]) # Magnitude.
 
         # Set a max velocity to become closer to reality.
@@ -49,12 +44,10 @@ class Single_integrator(Constraints):
             # Initialize velocity vectors.
             v_tilde = np.zeros(params.dim)
             v_star = np.zeros(params.dim)
-            u_head = np.zeros(params.dim)
             for j in range(params.N):
                 if params.A[i, j] == 1:
                     z_k = params.x[i] - params.x[j] # Computes the real relative pose.
                     v_tilde -= (z_k - params.relative_pos_desired[i, j]) # Add the contribution of neighbor j to agent i's velocity.
-                    u_head = u[j].copy() # Store agent's j (edge's head) velocity vector.
 
                     if params.rec: # Recentered Lyapunov barrier function.
                         W_grad = self.recentered_barrier(params, z_k, i, j)
@@ -64,7 +57,7 @@ class Single_integrator(Constraints):
                         W_grad = (W_conn - W_coll) * z_k
                     v_star -= params.c1 * W_grad # Virtual control. The Incidence Matrix (Eik) is already being take into account in the if statement (Adjacency matrix).
 
-            u[i] = params.c2 * v_tilde + v_star + u_head
+            u[i] = params.c2 * v_tilde + v_star
             u_i = np.linalg.norm(u[i]) # Magnitude.
 
             # Saturation. Set a max velocity to become closer to reality.
