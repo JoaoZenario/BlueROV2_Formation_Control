@@ -21,7 +21,7 @@ class Constraints:
         # Lyapunov barrier functions throughout the whole trajectory.
         # Connectivity Maintenance - Equation 3.81.
         # max() is used to prevent division by zero, if robots touch the limit, and also to prevent the opposite behvior when agents are initially out of the raidus threshold.
-        W_conn = 1 / (max(params.d_max**2 - np.sum(d**2), 1e-2))
+        W_conn = 1 / max(params.d_max**2 - np.sum(d**2), 1e-6)
         return W_conn
 
     #* Collision Avoidance Constraint.
@@ -29,7 +29,7 @@ class Constraints:
         # Lyapunov barrier functions throughout the whole trajectory.
         # Collision Avoidance - Equation 5.8 and 5.9.
         # max() is used to prevent division by zero, if robots touch the limit, and also to prevent the opposite behvior when agents are initially out of the raidus threshold.
-        W_coll = 1 / (max(np.sum(d**2) - params.d_min**2, 1e-2))
+        W_coll = 1 / max(np.sum(d**2) - params.d_min**2, 1e-6)
         return W_coll
 
     #* Recentered Lyapunov Barrier Function.
@@ -54,7 +54,7 @@ class Constraints:
         W_grad_target = W_conn_target - W_coll_target # Gradient at target position
         
         # For recentered barrier function: ∇B(z) = ∇B̄(z) - ∇B̄(0)
-        return (W_grad_current - W_grad_target) * z_k
+        return (1 + W_grad_current - W_grad_target) * (z_k - target_vector)
 
     #* Field of View Constraint (Rectangular/Pyramidal 3D).
     def field_of_view(self, params):
@@ -76,8 +76,8 @@ class Constraints:
             alpha_v = np.arctan2(beta_ij[2], beta_ij[0]) # Vertical.
             
             # Barrier functions.
-            W_h = 1 / (max(params.theta_max_x**2 - alpha_h**2, 1e-2)) # Horizontal.
-            W_v = 1 / (max(params.theta_max_y**2 - alpha_v**2, 1e-2)) # Veritcal.
+            W_h = 1 / (max(params.theta_max_x**2 - alpha_h**2, 1e-6)) # Horizontal.
+            W_v = 1 / (max(params.theta_max_y**2 - alpha_v**2, 1e-6)) # Veritcal.
 
             # Control Commands.
             omega_cmd = np.array([
