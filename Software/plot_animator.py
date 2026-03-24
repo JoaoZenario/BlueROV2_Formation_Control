@@ -18,6 +18,13 @@ import matplotlib.colors as mcolors
 class Animation():
     #* Function to define and itialize the simulation and all plots.
     def __init__(self, params):
+        self.colors = [
+            '#{:02X}{:02X}{:02X}'.format(
+                int(r * 255), int(g * 255), int(b * 255)
+            )
+            for r, g, b, _ in plt.cm.hsv([i / params.N for i in range(params.N)])
+        ]
+
         #self.plot_barrier(params)
         # Formation Workspace.
         self.fig_space = plt.figure("Formation Workspace", figsize=(8, 8))
@@ -94,8 +101,8 @@ class Animation():
             self.fov_y_lines = []
 
         # Agents and their path representation.
-        self.dots = [self.ax.plot([], [], 'o', color=params.colors[i], markersize=5, label=f"ROV {i+1}")[0] for i in range(params.N)] # Create N dots, one for each agent.
-        self.trails = [self.ax.plot([], [], '-', color=params.colors[i], alpha=0.1)[0] for i in range(params.N)] # Create the path trail for each agent.
+        self.dots = [self.ax.plot([], [], 'o', color=self.colors[i], markersize=5, label=f"ROV {i+1}")[0] for i in range(params.N)] # Create N dots, one for each agent.
+        self.trails = [self.ax.plot([], [], '-', color=self.colors[i], alpha=0.1)[0] for i in range(params.N)] # Create the path trail for each agent.
 
         # Create the legend on the 3D axis.
         self.ax.legend(loc='upper right', shadow=True, fontsize='x-small')
@@ -106,13 +113,13 @@ class Animation():
         
         # Plot label.
         for i in range(params.N):
-            self.err_lines.append(self.ax_err.plot([], [], color=params.colors[i], label=f'ROV {i+1}')[0])
-            self.vel_lines.append(self.ax_vel.plot([], [], color=params.colors[i], label=f'ROV {i+1}')[0])
+            self.err_lines.append(self.ax_err.plot([], [], color=self.colors[i], label=f'ROV {i+1}')[0])
+            self.vel_lines.append(self.ax_vel.plot([], [], color=self.colors[i], label=f'ROV {i+1}')[0])
             if params.fov:
-                self.fov_x_lines.append(self.ax_fov_x.plot([], [], color=params.colors[i], label=f'ROV {i+1}')[0])
-                self.fov_y_lines.append(self.ax_fov_y.plot([], [], color=params.colors[i], label=f'ROV {i+1}')[0])
+                self.fov_x_lines.append(self.ax_fov_x.plot([], [], color=self.colors[i], label=f'ROV {i+1}')[0])
+                self.fov_y_lines.append(self.ax_fov_y.plot([], [], color=self.colors[i], label=f'ROV {i+1}')[0])
             if params.mode_dynamics:
-                self.accel_lines.append(self.ax_accel.plot([], [], color=params.colors[i], label=f'ROV {i+1}')[0])
+                self.accel_lines.append(self.ax_accel.plot([], [], color=self.colors[i], label=f'ROV {i+1}')[0])
             
             # Distance lines based on adjacency.
             for j in range(params.N):
@@ -148,7 +155,8 @@ class Animation():
         current_time = frame * params.dt
         stats = f"Time: {current_time:5.2f}s\n"
         stats += "-" * 15 + "\n"
-        time_axis = np.linspace(0, current_time, len(params.vel_history))
+        # Create time axis only up to current frame (not full history)
+        time_axis = np.arange(frame + 1) * params.dt
 
         cmap = plt.get_cmap('RdYlGn_r') # Get colormap for the edge representation (smooth transition from red to yellow to green, based on distance).
 
@@ -157,10 +165,10 @@ class Animation():
             self.dots[i].set_data([params.x[i, 0]], [params.x[i, 1]]) # x and y.
             if params.dim == 3:
                 self.dots[i].set_3d_properties([params.x[i, 2]]) # z.
-            # Update the trails on the plot.
-            self.trails[i].set_data(params.history_np[:, i, 0], params.history_np[:, i, 1]) # x and y.
+            # Update the trails on the plot (only up to current frame).
+            self.trails[i].set_data(params.history[:frame+1, i, 0], params.history[:frame+1, i, 1]) # x and y.
             if params.dim == 3:
-                self.trails[i].set_3d_properties(params.history_np[:, i, 2]) # z.
+                self.trails[i].set_3d_properties(params.history[:frame+1, i, 2]) # z.
             # Distance (to leader).
             if i: # Skip if i=0 (leader).
                 # Calculate actual distance to leader using the same method (Euclidean distance): d = √[(u_x_i - u_x_0)² + (u_y_i - u_y_0)² + (u_z_i - u_z_0)²].
@@ -170,9 +178,9 @@ class Animation():
             # Distance (edge length).
             for j in range(params.N):
                 if params.A[i, j] == 1:
-                    z_k_hist = params.history_np[:, i, :] - params.history_np[:, j, :]
+                    z_k_hist = params.history[:frame+1, i, :] - params.history[:frame+1, j, :]
                     dist_hist = np.linalg.norm(z_k_hist, axis=1)
-                    self.dist_lines[edge_count].set_data(time_axis, dist_hist[-len(time_axis):])
+                    self.dist_lines[edge_count].set_data(time_axis, dist_hist)
 
                     d = dist_hist[-1]
 
@@ -197,22 +205,22 @@ class Animation():
                     # Save lenght od biggest edge on that moment to update the edge distance plot. 
                     if d > current_max_dist:
                         current_max_dist = d
-            # Velocity.
-            self.vel_lines[i].set_data(time_axis, params.vel_hist_np[:, i])
+            # Velocity (only up to current frame).
+            self.vel_lines[i].set_data(time_axis, params.vel_history[:frame+1, i])
             if params.mode_dynamics:
                 speed = np.linalg.norm(params.v[i]) # Compute the speed using the Euclidean norm: |v| = √(u_x² + u_y² + u_z²).  
             else:
                 speed = np.linalg.norm(u[i]) # Compute the speed using the Euclidean norm: |v| = √(u_x² + u_y² + u_z²).
             stats += f"ROV {i+1} Vel: {speed:5.2f} m/s\n"
-            # Acceleration.
+            # Acceleration (only up to current frame).
             if params.mode_dynamics:
-                self.accel_lines[i].set_data(time_axis, params.accel_hist_np[:, i])
-            # Formation error.
-            self.err_lines[i].set_data(time_axis, params.err_hist_np[:, i])
-            # Field of View error.
+                self.accel_lines[i].set_data(time_axis, params.accel_history[:frame+1, i])
+            # Formation error (only up to current frame).
+            self.err_lines[i].set_data(time_axis, params.err_history[:frame+1, i])
+            # Field of View error (only up to current frame).
             if params.fov:
-                err_x = params.fov_hist_np[:, i, 0] 
-                err_y = params.fov_hist_np[:, i, 1]
+                err_x = params.fov_history[:frame+1, i, 0] 
+                err_y = params.fov_history[:frame+1, i, 1]
                 
                 self.fov_x_lines[i].set_data(time_axis, err_x)
                 self.fov_y_lines[i].set_data(time_axis, err_y)
@@ -253,29 +261,29 @@ class Animation():
             )
 
     #* Function to set plot size, according to variable limits and/or variable values during the simulation. 
-    def plot_size(self, params, current_max_dist):
+    def plot_size(self, params, frame, current_max_dist):
         # Axis limits.
         # Distance.
         self.ax_dist.set_xlim(0, params.steps * params.dt)
         self.ax_dist.set_ylim(0, max(current_max_dist, params.d_max) * 1.05)
         # Velocity.
         self.ax_vel.set_xlim(0, params.steps * params.dt)
-        if params.vel_hist_np.size > 0:
+        if params.vel_history.size > 0:
             # Look at the maximum velocity in the current iteration across all agents (for velocity plot).
-            current_max_vel = np.max(params.vel_hist_np[-1, :])
+            current_max_vel = np.max(params.vel_history[frame, :])
             self.ax_vel.set_ylim(0, max(params.v_max * 1.05, current_max_vel * 1.2))
         # Acceleration.
         if params.mode_dynamics:
             self.ax_accel.set_xlim(0, params.steps * params.dt)
             self.ax_accel.set_ylim(0, params.a_max * 1.05)
         # Error.
-        if params.err_hist_np.size > 0:
+        if params.err_history.size > 0:
             self.ax_err.set_xlim(0, params.steps * params.dt)
             # Look at the maximum formation error in the current iteration across all agents (for error plot).
-            current_max_err = np.max(params.err_hist_np[-1, :])
+            current_max_err = np.max(params.err_history[frame, :])
             self.ax_err.set_ylim(0, max(10.0, current_max_err * 1.2))
         # FOV (Horizontal and Vertical).
-        if params.fov and params.fov_hist_np.size > 0:
+        if params.fov and params.fov_history.size > 0:
             self.ax_fov_x.set_xlim(0, params.steps * params.dt)
             self.ax_fov_y.set_xlim(0, params.steps * params.dt)
             
@@ -283,8 +291,8 @@ class Animation():
             limit_deg_y = np.degrees(params.theta_max_y)
 
             # Current max angle error.
-            current_max_abs_x = np.max(np.abs(params.fov_hist_np[-1, :, 0]))
-            current_max_abs_y = np.max(np.abs(params.fov_hist_np[-1, :, 1]))
+            current_max_abs_x = np.max(np.abs(params.fov_history[frame, :, 0]))
+            current_max_abs_y = np.max(np.abs(params.fov_history[frame, :, 1]))
 
             win_x = max(limit_deg_x + 5, current_max_abs_x * 1.1)
             self.ax_fov_x.set_ylim(-win_x, win_x)
@@ -297,7 +305,7 @@ class Animation():
     #* Function to call other functions that handle the simulation and plots.
     def plot_handle(self, frame, params, u):
         current_max_dist = self.plot_data(frame, params, u)
-        self.plot_size(params, current_max_dist)
+        self.plot_size(params, frame, current_max_dist)
 
 
     def get_barrier(self, params, d):
@@ -389,3 +397,36 @@ class Animation():
         #self.animation.save('rov_formation_3d.mp4', writer='ffmpeg', fps=30, dpi=150)
         plt.show()
         #"""
+    
+    #* Function to replay animation from pre-computed history
+    def replay_animation(self, params, u_history):
+        """
+        Replay animation from collected simulation history.
+        
+        Args:
+            params: Parameters object with history arrays populated
+            u_history: List of control inputs for each step [u_0, u_1, ..., u_steps]
+        """
+        def update_frame(frame):
+            """Update animation for a single frame."""
+            # Extract position from history at this frame (not just final position)
+            if hasattr(params, 'history') and params.history.shape[0] > frame:
+                params.x = params.history[frame]  # Use position history at this frame
+            # Extract velocity from history at this frame
+            if hasattr(params, 'v_history_full') and params.v_history_full.shape[0] > frame:
+                params.v = params.v_history_full[frame]  # Use velocity history at this frame
+            # Extract quaternion from history at this frame (for FOV visualization)
+            if hasattr(params, 'q_history') and params.q_history.shape[0] > frame:
+                params.q = params.q_history[frame]  # Use quaternion history at this frame
+            self.plot_handle(frame, params, u_history[frame])
+            return self.dots + self.trails + self.dist_lines + self.err_lines + [self.telemetry_text]
+        
+        self.animation = FuncAnimation(
+            self.fig_space, 
+            update_frame, 
+            frames=params.steps, 
+            interval=10, 
+            blit=False, 
+            repeat=False
+        )
+        plt.show()

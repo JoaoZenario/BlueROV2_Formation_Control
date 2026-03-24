@@ -12,8 +12,8 @@ import numpy as np
 import random 
 import matplotlib.pyplot as plt
 
-from graphs_utils import generate_random_connected_graph
-from graphs_utils import plot_graph_from_adjacency
+#from graphs_utils import generate_random_connected_graph
+#from graphs_utils import plot_graph_from_adjacency
 
 import argparse
 import sys
@@ -106,9 +106,16 @@ class Parameters:
         self.kp_pitch = kp_pitch
         self.theta_max_x = theta_max_x
         self.theta_max_y = theta_max_y
-
         self.counter = 0
+        # Leader trajectory parameters
+        self.leader_vel_amp = 0.5  # Leader velocity amplitude
+        self.leader_freq = 0.5    # Frequency of leader motion (Hz, converted to rad/s)
+        self.initialize_agents()
+        self.initialize_vectors()
+        self.generate_formation_offsets()
+        self.compute_desired_relative_matrix()
 
+    def initialize_agents(self):
         self.x = np.array([
             [3.39655962, 0.29968507, 4.17778228],
             [3.30965058, 1.82937878, 0.09709306],
@@ -139,32 +146,23 @@ class Parameters:
 
         # Generate random graph and compute distance between agents and all usefull information.
         #self.x, self.A, self.E, self.NE, self.dist = generate_random_connected_graph(self.N, self.dim, self.d_max, self.d_min, self.l, self.mode_graph, self.fov)
-        plot_graph_from_adjacency(self.x, self.A, self.mode_graph)
+        #plot_graph_from_adjacency(self.x, self.A, self.mode_graph)
 
-        # Colors to distinguish each agent.
-        self.colors = [
-            '#{:02X}{:02X}{:02X}'.format(
-                int(r * 255), int(g * 255), int(b * 255)
-            )
-            for r, g, b, _ in plt.cm.hsv([i / self.N for i in range(self.N)])
-        ]
-
-        self.history = [self.x.copy()] # Store history of agent's pose over time for the trails.
+    def initialize_vectors(self):
         self.o = np.zeros((self.N, self.dim)) # Offset formation relative to Leader.
         self.v = np.zeros((self.N, self.dim)) # Velocity of all agents.
-        self.err_history = [] # Store history of agent's formation error over time.
-        self.fov_history = [] # Store history of agent's FOV over time.
-        self.vel_history = [] # Store history of agent's velocity over time.
-        self.history_np = np.empty((0, self.N, self.dim))
-        self.vel_hist_np = np.empty((0, self.N))
-        self.accel_hist_np = np.empty((0, self.N))
-        self.err_hist_np = np.empty((0, self.N))
-        self.fov_hist_np = np.empty((0, self.N))
+        self.history = np.empty((0, self.N, self.dim))
+        self.vel_history = np.empty((0, self.N))
+        self.accel_history = np.empty((0, self.N))
+        self.err_history = []
+        self.fov_history = np.empty((0, self.N))
         self.q = np.tile(np.array([0.0, 0.0, 0.0, 1.0]), (self.N, 1)) # Create an (N, 4) array to store [x, y, z, w] for each of the N agents
+        self.target_dist = np.zeros(self.N) # Stores desired distance between agents.
+        self.relative_pos_desired = np.zeros((self.N, self.N, self.dim)) # Stores desired relative positions between agents.
+        self.x_lf = np.zeros((self.N, self.dim))
+        self.ẋ_lf = np.zeros((self.N, self.dim))
 
-        if self.mode_dynamics:
-            self.accel_history = [] # Store history of agent's acceleration over time.
-
+    def generate_formation_offsets(self):
         # Agent 0 is the leader at (0,0,0)
         # Agents 1 to N form a shape around the leader, examples:
         # N = 4: Triangle with the leader in the center.
@@ -172,27 +170,49 @@ class Parameters:
         # N = 6: Pentagon with the leader in the center.
         # N = 11:  Decagon with the leader in the center.
         # N -> +∞ Shape -> Circle with the leader in the center.
+        """Internal helper to define the shape around the leader."""
         for i in range(1, self.N):
             angle = (2 * np.pi / (self.N - 1)) * (i - 1)
-            if self.dim == 2:
-                self.o[i, 0] = 0.0 # X offset.
-                self.o[i, 1] = i*5 # Y offset (same Y).
             if self.dim == 3:
-                self.o[i, 0] = self.R * np.cos(angle) # X offset.
-                self.o[i, 1] = self.R * np.sin(angle) # Y offset.
-                self.o[i, 2] = 0.0               # Z offset (same depth).
+                self.o[i, 0] = self.R * np.cos(angle)
+                self.o[i, 1] = self.R * np.sin(angle)
+                self.o[i, 2] = 0.0 
 
-        self.relative_pos_desired = np.zeros((self.N, self.N, self.dim)) # Stores desired relative positions between agents.
-        self.target_dist = np.zeros(self.N) # Stores desired distance between agents.
-
+    def compute_desired_relative_matrix(self):
+        """Pre-calculates z_target[i,j] for the controllers."""
         for i in range(self.N):
             for j in range(self.N):
                 self.relative_pos_desired[i, j] = self.o[i] - self.o[j] # Fills the array with the desired relative positions.
             if i:
                 self.target_dist[i] = np.linalg.norm(self.relative_pos_desired[i, 0]) # Calculate the target distance (from desired offsets).
 
-        self.x_lf = np.zeros((self.N, self.dim))
-        self.ẋ_lf = np.zeros((self.N, self.dim))
+    def get_leader_acceleration(self, step: int) -> np.ndarray:
+        """
+        Compute the leader's acceleration based on a predefined circular trajectory.
+        Uses sinusoidal motion pattern in the x-y plane.
+        
+        Args:
+            step: Current simulation step
+        
+        Returns:
+            Acceleration vector for the leader (3D or 2D based on self.dim)
+        """
+        time = step * self.dt
+        omega = 2 * np.pi * self.leader_freq  # Angular frequency
+        
+        # Sinusoidal motion in x-y plane (circular pattern)
+        # If x = A*sin(ωt), y = A*cos(ωt), then:
+        # a_x = -Aω²*sin(ωt), a_y = -Aω²*cos(ωt)
+        accel = np.zeros(self.dim)
+        if step < 200:
+            accel[0] = 0.1#-self.leader_vel_amp * omega**2 * np.sin(omega * time)
+            accel[1] = 0.1#-self.leader_vel_amp * omega**2 * np.cos(omega * time)
+        else:
+            accel[0] = 0.0
+            accel[1] = 0.0
+        # z-axis accelerations remains zero
+        
+        return accel
 
     @staticmethod
     def function_arguments():
