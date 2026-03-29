@@ -1,488 +1,218 @@
 #!/usr/bin/env python3
 
-##########################################################
-#                                                        #
-# Main - Formation Control Simulation                    #
-# Code Author: João Zenário                              #
-#                                                        #     
-##########################################################
-
-"""
-Clean simulation loop for multi-robot formation control.
-
-Architecture:
-- RobotSimulator: One per robot, handles dynamics integration
-- Controllers: One per robot, computes control input
-- GraphManager: Manages communication topology
-- History is collected (no plotting in loop), then visualized separately
-"""
-
 import numpy as np
-from scipy.spatial.transform import Rotation as R
-from typing import List, Dict, Tuple
-
+from typing import List, Dict
 from robot_simulator import RobotSimulator
 from graphs_utils import get_neighbor_lists_from_adjacency
 from controller import (
-    SingleIntegratorController,
     DoubleIntegratorController,
     FieldOfViewController,
+    BlueROV2Controller
 )
-from robots import SingleIntegrator, DoubleIntegrator
 from systems import RK4Integrator
 from parameters import Parameters
-from plot_animator import Animation
-
-
+from BlueROV2_thrust import BlueROV2
 
 class FormationControlSimulation:
-    """
-    Main simulation orchestrator for multi-robot formation control.
-    
-    Manages initialization of all components and runs the main simulation loop.
-    """
-    
     def __init__(self, params: Parameters):
-        """
-        Initialize the simulation with all components.
-        
-        Args:
-            params: Parameters object with all configuration
-        """
         self.params = params
-        self.N = self.params.N
-        self.dim = self.params.dim
-        
+
         print("\n" + "="*60)
         print("        BLUE ROV2 FORMATION CONTROL SIMULATION")
         print("="*60)
-        self._print_configuration()
-        print("="*60 + "\n")
+
+        self.neighbors_dict = get_neighbor_lists_from_adjacency(self.params.A) # Topology.
+        self.simulators = self._initialize_simulators() # Simulators.
+
+        # Controllers
+        self.formation_controllers = self._initialize_formation_controller() # Formation controller (single/double integrator).
+        self.fov_controllers = self._initialize_fov_controller() if self.params.fov else None # FOV controller.
+        self.controllers = self._initialize_BROV_controller() # BlueROV2 controller.
+
+        self._initialize_state_tracking() # State Tracking and History Logging.
         
-        # Step 1: Initialize graph
-        print("[1/5] Initializing graph topology...")
-        self.neighbors_dict = get_neighbor_lists_from_adjacency(params.A)
-        print(f"      Graph initialized with {len(self.neighbors_dict)} agents")
-        
-        # Step 2: Initialize robot simulators
-        print("[2/5] Initializing robot simulators...")
-        self.simulators = self._initialize_simulators()
-        print(f"      Created {len(self.simulators)} simulators")
-        
-        # Step 3: Initialize controllers
-        print("[3/5] Initializing controllers...")
-        self.controllers = self._initialize_controllers()
-        print(f"      Created {len(self.controllers)} controllers")
-        
-        # Step 4: Initialize FOV controllers (if enabled)
-        self.fov_controllers = None
-        if params.fov:
-            print("[4/5] Initializing FOV controllers...")
-            self.fov_controllers = self._initialize_fov_controllers()
-            print(f"      Created {len(self.fov_controllers)} FOV controllers")
-        else:
-            print("[4/5] FOV disabled - skipping FOV controller initialization")
-        
-        # Step 5: Initialize state tracking
-        print("[5/5] Initializing state tracking...")
-        self._initialize_state_tracking()
-        print("      State tracking ready\n")
-    
-    def _print_configuration(self):
-        """Print simulation configuration dashboard."""
-        dashboard = (
-            f"--- CONFIGURATION ---\n"
-            f"Agents (N):              {self.params.N}\n"
-            f"Dimension:               {self.params.dim}D\n"
-            f"Dynamics:                {'Double' if self.params.mode_dynamics else 'Single'} Integrator\n"
-            f"Graph Type:              {'Directed' if self.params.mode_graph else 'Undirected'}\n"
-            f"\n--- CONSTRAINTS ---\n"
-            f"Connectivity:            {['Off', 'On'][self.params.conn]}\n"
-            f"Collision Avoidance:     {['Off', 'On'][self.params.coll]}\n"
-            f"Field of View:           {['Off', 'On'][self.params.fov]}\n"
-            f"Recentered Barrier:      {['Off', 'On'][self.params.rec]}\n"
-            f"\n--- PHYSICS & CONTROL ---\n"
-            f"Time Step (dt):          {self.params.dt}s ({self.params.steps} steps)\n"
-            f"Gains:                   c1={self.params.c1}, c2={self.params.c2}, "
-            f"c3={self.params.c3}\n"
-            f"FOV Gains:               c4_h={self.params.c4_h}, c4_v={self.params.c4_v}, "
-            f"kp_yaw={self.params.kp_yaw}\n"
-            f"Filter:                  ωn={self.params.wn if self.params.mode_dynamics else 'N/A'}\n"
-            f"Limits:                  v_max={self.params.v_max}m/s, "
-            f"a_max={self.params.a_max}m/s²\n"
-            f"Thresholds:              d_max={self.params.d_max}m, d_min={self.params.d_min}m\n"
-            f"Formation Radius:        {self.params.R}m"
-        )
-        print(dashboard)
-    
+        # Internal state for leader velocity integration
+        self.leader_v_star = np.zeros(3) 
+        print("      Initialization Complete\n")
+
     def _initialize_simulators(self) -> List[RobotSimulator]:
-        """Create a RobotSimulator for each robot."""
         simulators = []
-        
-        # Choose dynamics model
-        if self.params.mode_dynamics:
-            system_class = DoubleIntegrator
-        else:
-            system_class = SingleIntegrator
-        
-        for i in range(self.N):
-            # Create system dynamics for this robot
-            system = system_class(dim=self.dim)
-            
-            # Get initial state from parameters
-            x0 = self.params.x[i].copy()
-            
-            # Create simulator
-            sim = RobotSimulator(
-                robot_id=i,
-                system=system,
-                x0=x0,
-                dt=self.params.dt,
-                integrator=RK4Integrator(),
-                u_min=getattr(system, 'u_min', None),
-                u_max=getattr(system, 'u_max', None),
-                u_norm_max=getattr(system, 'u_norm_max', None),
-            )
+        for i in range(self.params.N):
+            rov_model = BlueROV2() 
+            x0 = np.zeros(12)
+            x0[0:3] = self.params.x[i] 
+            sim = RobotSimulator(i, rov_model, x0, self.params.dt, RK4Integrator())
             simulators.append(sim)
-        
         return simulators
-    
-    def _initialize_controllers(self) -> List:
-        """Create a Controller for each robot."""
+
+    def _initialize_formation_controller(self) -> List:
+        f_controllers = []
+        for i in range(self.params.N):
+            ctrl = DoubleIntegratorController(i, self.params)
+            f_controllers.append(ctrl)
+        return f_controllers
+
+    def _initialize_fov_controller(self) -> List[FieldOfViewController]:
+        return [FieldOfViewController(i, self.params) for i in range(self.params.N)]
+
+    def _initialize_BROV_controller(self) -> List[BlueROV2Controller]:
         controllers = []
-        
-        # Prepare control gains
-        control_gains = {
-            'c1': self.params.c1,
-            'c2': self.params.c2,
-            'c3': self.params.c3,
-            'wn': self.params.wn,
-        }
-        
-        # Prepare constraints
-        constraints = {
-            'conn': bool(self.params.conn),
-            'coll': bool(self.params.coll),
-            'rec': bool(self.params.rec),
-            'fov': bool(self.params.fov),
-        }
-        
-        # Prepare limits
-        limits = {
-            'v_max': self.params.v_max,
-            'a_max': self.params.a_max,
-            'd_max': self.params.d_max,
-            'd_min': self.params.d_min,
-            'R': self.params.R,
-            'dt': self.params.dt,
-        }
-        
-        # Create appropriate controller type
-        for i in range(self.N):
-            if self.params.mode_dynamics:
-                controller = DoubleIntegratorController(
-                    robot_id=i,
-                    dim=self.dim,
-                    control_gains=control_gains,
-                    constraints=constraints,
-                    limits=limits,
-                )
-            else:
-                controller = SingleIntegratorController(
-                    robot_id=i,
-                    dim=self.dim,
-                    control_gains=control_gains,
-                    constraints=constraints,
-                    limits=limits,
-                )
-            controllers.append(controller)
-        
+        for i in range(self.params.N):
+            rov_model = BlueROV2() 
+            ctrl = BlueROV2Controller(i, self.params, rov_model)
+            controllers.append(ctrl)
         return controllers
-    
-    def _initialize_fov_controllers(self) -> List[FieldOfViewController]:
-        """Create a FieldOfViewController for each robot (if FOV enabled)."""
-        fov_controllers = []
-        
-        fov_gains = {
-            'kp_yaw': self.params.kp_yaw,
-            'kp_pitch': self.params.kp_pitch,
-            'c4_h': self.params.c4_h,
-            'c4_v': self.params.c4_v,
-        }
-        
-        fov_limits = {
-            'theta_max_x': self.params.theta_max_x,
-            'theta_max_y': self.params.theta_max_y,
-            'dt': self.params.dt,
-        }
-        
-        for i in range(self.N):
-            fov_ctrl = FieldOfViewController(
-                robot_id=i,
-                dim=self.dim,
-                fov_gains=fov_gains,
-                fov_limits=fov_limits,
-            )
-            fov_controllers.append(fov_ctrl)
-        
-        return fov_controllers
-    
+
     def _initialize_state_tracking(self):
-        """Initialize arrays to track state throughout simulation."""
-        # Positions
-        self.x = np.array([sim.state for sim in self.simulators])
-        
-        # Velocities (for double integrator)
-        if self.params.mode_dynamics:
-            self.v = self.params.v.copy()
-            # Filter states for double integrator controllers
-            self.x_lf = self.params.x_lf.copy()
-            self.v_lf = self.params.ẋ_lf.copy()
-        else:
-            self.v = None
-            self.x_lf = None
-            self.v_lf = None
-        
-        # Quaternions (for FOV)
+        """Initializes history and logs the initial state."""
+        self.x = np.array([sim.state[0:3] for sim in self.simulators])
+        self.v = np.array([sim.state[6:9] for sim in self.simulators])
         self.q = self.params.q.copy()
         
-        # History for plotting/analysis
-        self.history = {
-            'time': [],
-            'positions': [],
-            'velocities': [],
-            'accelerations': [] if self.params.mode_dynamics else None,
-            'quaternions': [] if self.params.fov else None,
-            'formation_errors': [],
-            'fov_errors': [] if self.params.fov else None,
-        }
-    
+        self.params.history = self.x[np.newaxis, :, :] # (1, N, 3)
+        self.params.vel_history = [[np.linalg.norm(vi) for vi in self.v]]
+        self.params.v_history_full = [self.v.copy()]
+        self.params.accel_history = [[0.0] * self.params.N]
+        self.params.err_history = [self._compute_formation_errors()]
+        self.params.tau_history = [[0.0] * self.params.N]
+        
+        if self.params.fov:
+            self.params.fov_history = [[[0.0, 0.0]] * self.params.N]
+            self.params.q_history = [self.q.copy()]
+
     def run(self) -> Dict:
-        """
-        Run the main simulation loop.
-        
-        Returns:
-            Dictionary containing collected history for post-processing
-        """
-        print("Starting simulation...\n")
-        
-        u_history = []  # Track control inputs for animation
+        print("Starting Cascaded ROV Simulation...\n")
+        u_history = []
         
         for step in range(self.params.steps):
-            # ========================================
-            # Step 1: Compute control for each robot
-            # ========================================
-            u = []
+            u_wrenches = []
             
-            for i in range(self.N):
-                # Get current state
-                state_i = self.x[i]
-                
-                # Get neighbors
+            # --- STEP 1: COMPUTE CONTROLS ---
+            for i in range(self.params.N):
+                state_full = self.simulators[i].state
                 neighbors_i = self.neighbors_dict[i]
                 
-                # Extract neighbor states
                 if len(neighbors_i) > 0:
-                    neighbors_state = self.x[neighbors_i]  # Get positions of neighbors
-                    # Compute relative states
-                    rel_state = self.x[i] - neighbors_state  # z_ij = x_i - x_j
+                    neighbors_pos = np.array([self.simulators[j].state[0:3] for j in neighbors_i])
+                    rel_state = state_full[0:3] - neighbors_pos
                 else:
-                    rel_state = np.array([]).reshape(0, self.dim)
+                    rel_state = np.array([]).reshape(0, self.params.dim)
                 
-                # Get desired relative states
-                desired_rel_state = self.params.relative_pos_desired[i, neighbors_i]
-                if len(neighbors_i) == 0:
-                    desired_rel_state = np.array([]).reshape(0, self.dim)
-                
-                # Compute control
-                is_leader = (i == 0)
-                
-                # Leader follows a predefined trajectory
-                if is_leader:
-                    u_i = self.params.get_leader_acceleration(step)
-                elif self.params.mode_dynamics:
-                    # Double integrator: pass velocity and filter states
-                    u_i = self.controllers[i].doControl(
-                        state_i=state_i,
-                        relative_states=rel_state,
-                        desired_relative_states=desired_rel_state,
-                        velocity_i=self.v[i],
-                        x_lf=self.x_lf[i],
-                        v_lf=self.v_lf[i],
-                        is_leader=is_leader,
-                    )
-                    # Update filter states
-                    self.x_lf[i] = self.controllers[i].x_lf
-                    self.v_lf[i] = self.controllers[i].v_lf
+                desired_rel = self.params.relative_pos_desired[i, neighbors_i]
+
+                if i == 0: 
+                    accel_leader = self.params.get_leader_acceleration(step)
+                    # Saturate leader acceleration to a_max
+                    accel_leader_norm = np.linalg.norm(accel_leader)
+                    if accel_leader_norm > self.params.a_max:
+                        accel_leader *= self.params.a_max / accel_leader_norm
+                    self.leader_v_star += accel_leader * self.params.dt
+                    v_star_3d = self.leader_v_star
                 else:
-                    # Single integrator: velocity command
-                    u_i = self.controllers[i].doControl(
-                        state_i=state_i,
+                    v_star_3d = self.formation_controllers[i].doControl(
                         relative_states=rel_state,
-                        desired_relative_states=desired_rel_state,
-                        is_leader=is_leader,
+                        desired_relative_states=desired_rel,
+                        velocity_i=state_full[6:9]
                     )
                 
-                u.append(u_i)
+                v_star_6d = np.zeros(6); v_star_6d[0:3] = v_star_3d
+
+                tau_i = self.controllers[i].controller1(state_full, v_star_6d) # Controller1
+                #tau_i = self.controllers[i].controller2(state_full, v_star_6d) # Controller2
+                # Controller3
+                #f_thrusters = self.controllers[i].controller3(state_full, v_star_6d)
+                #tau_i = self.controllers[i].get_actuator_matrix() @ f_thrusters  # TRANSLATION STEP: Convert 8 forces into 1 6D Wrench. tau = B @ f
+
+                # Now send the 6D Wrench to the simulator
+                u_wrenches.append(tau_i)
             
-            u_history.append(np.array(u).copy())
+            u_history.append(np.array(u_wrenches).copy())
             
-            # ========================================
-            # Step 2: Integrate dynamics for each robot
-            # ========================================
-            for i in range(self.N):
-                if self.params.mode_dynamics:
-                    # Double integrator: x = [position, velocity]
-                    # We need to manually update velocity
-                    self.v[i] += u[i] * self.params.dt
-                    
-                    # Apply velocity saturation for double integrator
-                    v_norm = np.linalg.norm(self.v[i])
-                    if v_norm > self.params.v_max:
-                        self.v[i] *= self.params.v_max / v_norm
-                    
-                    self.x[i] += self.v[i] * self.params.dt
-                else:
-                    # Single integrator: position update via simulator
-                    # For single integrator, u is the velocity command
-                    self.x[i] = self.simulators[i].integrate_dynamics(u[i])
-            
-            # ========================================
-            # Step 3: Handle FOV orientation (if enabled)
-            # ========================================
-            fov_errors_step = []
+            # --- STEP 2: INTEGRATE PHYSICS ---
+            old_v = self.v.copy()
+            for i in range(self.params.N):
+                new_state = self.simulators[i].integrate_dynamics(u_wrenches[i])
+                self.x[i] = new_state[0:3]
+                self.v[i] = new_state[6:9]
+
+                # Hard cap actual agent acceleration using a_max (post-dynamics safety clamp).
+                dv = self.v[i] - old_v[i]
+                dv_norm = np.linalg.norm(dv)
+                max_dv = self.params.a_max * self.params.dt
+                if dv_norm > max_dv and dv_norm > 0:
+                    dv = dv * (max_dv / dv_norm)
+                    corrected_v = old_v[i] + dv
+                    self.v[i] = corrected_v
+                    # Apply corrected velocity back to simulator state vector as well.
+                    self.simulators[i].sim.x[6:9] = corrected_v
+
+            # --- STEP 3: FOV (Optional) ---
+            fov_errors_step = [[0.0, 0.0]] * self.params.N
             if self.params.fov:
-                fov_errors_step = [[0.0, 0.0]]  # Leader has no FOV error
-                for i in range(1, self.N):
-                    # Find target (first neighbor)
+                for i in range(1, self.params.N):
                     neighbors_i = self.neighbors_dict[i]
                     if len(neighbors_i) > 0:
-                        target_idx = neighbors_i[0]
-                        omega_cmd, alpha_h, alpha_v, q_new = (
-                            self.fov_controllers[i].compute_orientation_input(
-                                position_i=self.x[i],
-                                position_target=self.x[target_idx],
-                                quaternion_i=self.q[i],
-                            )
+                        _, ah, av, q_new = self.fov_controllers[i].compute_orientation_input(
+                            self.x[i],
+                            self.x[neighbors_i[0]],
+                            self.q[i]
                         )
-                        # Store updated quaternion returned by FOV controller
                         self.q[i] = q_new
-                        fov_errors_step.append([np.degrees(alpha_h), np.degrees(alpha_v)])
-                    else:
-                        fov_errors_step.append([0.0, 0.0])
-            
-            # ========================================
-            # Step 4: Update params for original animator
-            # ========================================
-            # Populate params object as the original code did
-            self.params.x = self.x.copy()
-            self.params.v = self.v.copy() if self.params.mode_dynamics else np.array(u)
-            self.params.q = self.q.copy()
-            
-            # Store position history
-            self.params.history = np.vstack([self.params.history, self.x[np.newaxis, :, :]])
-            
-            # Store full velocity history (velocity vectors, not just magnitudes)
-            if not hasattr(self.params, 'v_history_full') or not isinstance(self.params.v_history_full, np.ndarray):
-                self.params.v_history_full = np.empty((0, self.N, self.dim))
-            self.params.v_history_full = np.vstack([self.params.v_history_full, self.params.v[np.newaxis, :, :]])
-            
-            # Store velocity history (magnitudes only, for telemetry plot)
-            if isinstance(self.params.vel_history, np.ndarray):
-                self.params.vel_history = self.params.vel_history.tolist()
-            if self.params.mode_dynamics:
-                current_speeds = [np.linalg.norm(v) for v in self.v]
-            else:
-                current_speeds = [np.linalg.norm(v) for v in u]
-            self.params.vel_history.append(current_speeds)
-            self.params.vel_history = np.array(self.params.vel_history)
-            
-            # Store acceleration history 
-            if self.params.mode_dynamics:
-                if isinstance(self.params.accel_history, np.ndarray):
-                    self.params.accel_history = self.params.accel_history.tolist()
-                current_accels = [np.linalg.norm(a) for a in u]
-                self.params.accel_history.append(current_accels)
-                self.params.accel_history = np.array(self.params.accel_history)
-            
-            # Store formation error
-            formation_errors = self._compute_formation_errors()
-            if isinstance(self.params.err_history, np.ndarray):
-                self.params.err_history = self.params.err_history.tolist()
-            self.params.err_history.append(formation_errors)
-            self.params.err_history = np.array(self.params.err_history)
-            
-            # Store FOV errors
-            if self.params.fov and len(fov_errors_step) > 0:
-                if isinstance(self.params.fov_history, np.ndarray):
-                    self.params.fov_history = self.params.fov_history.tolist()
-                self.params.fov_history.append(fov_errors_step)
-                self.params.fov_history = np.array(self.params.fov_history)
-            
-            # Store quaternion history (for FOV visualization during animation replay)
-            if self.params.fov:
-                if not hasattr(self.params, 'q_history') or not isinstance(self.params.q_history, np.ndarray):
-                    self.params.q_history = np.empty((0, self.N, 4))
-                self.params.q_history = np.vstack([self.params.q_history, self.q[np.newaxis, :, :]])
+                        fov_errors_step[i] = [np.degrees(ah), np.degrees(av)]
 
+            # --- STEP 4: DATA LOGGING ---
+            self.params.history = np.vstack([self.params.history, self.x[np.newaxis, :, :]])
+            self.params.vel_history.append([np.linalg.norm(vi) for vi in self.v])
+            self.params.v_history_full.append(self.v.copy())
+            accel_step = np.linalg.norm((self.v - old_v) / self.params.dt, axis=1)
+            self.params.accel_history.append(list(accel_step))
+            self.params.err_history.append(self._compute_formation_errors())
+            self.params.tau_history.append([np.linalg.norm(ti) for ti in u_wrenches])
+            if self.params.fov:
+                self.params.fov_history.append(fov_errors_step)
+                self.params.q_history.append(self.q.copy())
             
-            # ========================================
-            # Step 5: Log progress
-            # ========================================
-            current_time = step * self.params.dt
-            
-            # Print progress
-            if (step + 1) % max(1, self.params.steps // 10) == 0:
-                mean_error = np.mean(formation_errors[1:])
-                print(f"Step {step+1}/{self.params.steps} - "
-                      f"Time: {current_time:.2f}s - "
-                      f"Avg Formation Error: {mean_error:.2f}%")
-        
-        print("\nSimulation complete!\n")
-        
-        # Store control history for animation
+            progress_step = max(1, self.params.steps // 10)
+            # Print meand error and each agent error every 10% of the simulation steps
+            if (step + 1) % progress_step == 0 or step == self.params.steps - 1:
+                mean_err = np.mean(self.params.err_history[-1][1:]) 
+                print(f"Step {step+1}/{self.params.steps} - Mean Formation Error: {mean_err:.2f}%")
+                for i in range(1, self.params.N):
+                    print(f"  Agent {i}: Error = {self.params.err_history[-1][i]:.2f}%")
+                print("-"*50)
+                      
+        # --- STEP 5: NUMPY CONVERSION ---
+        self.params.vel_history = np.array(self.params.vel_history)
+        self.params.v_history_full = np.array(self.params.v_history_full)
+        self.params.accel_history = np.array(self.params.accel_history)
+        self.params.err_history = np.array(self.params.err_history)
+        self.params.tau_history = np.array(self.params.tau_history)
+        if self.params.fov:
+            self.params.fov_history = np.array(self.params.fov_history)
+            self.params.q_history = np.array(self.params.q_history)
+
         self.u_history = u_history
-        
-        return self.history
-    
+        return {"finished": True}
+
     def _compute_formation_errors(self) -> np.ndarray:
-        """
-        Compute formation tracking error for each robot.
-        
-        Returns:
-            Array of formation errors (in percentage)
-        """
-        errors = np.zeros(self.N)
-        
-        for i in range(self.N):
-            if i == 0:
-                errors[i] = 0.0  # Leader has no error
+        errors = np.zeros(self.params.N)
+        for i in range(1, self.params.N):
+            target_pos = self.x[0] + self.params.relative_pos_desired[i, 0]
+            dist_err = np.linalg.norm(self.x[i] - target_pos)
+            target_dist = self.params.target_dist[i] if hasattr(self.params, 'target_dist') else np.linalg.norm(self.params.relative_pos_desired[i, 0])
+            if target_dist > 1e-6:
+                errors[i] = (dist_err / target_dist) * 100.0
             else:
-                # Target position: leader + desired offset
-                target_pos = self.x[0] + self.params.relative_pos_desired[i, 0]
-                error_norm = np.linalg.norm(self.x[i] - target_pos)
-                # Normalize by formation radius
-                errors[i] = (error_norm / self.params.R) * 100.0
-        
+                errors[i] = 0.0
         return errors
 
-
 def main():
-    """Main entry point."""
-    # Initialize parameters from command line
     params = Parameters.function_arguments()
-    
-    # Create and run simulation
     sim = FormationControlSimulation(params)
-    history = sim.run()
-    
-    # Play animation from collected history
+    sim.run()
     from plot_animator import Animation
     animator = Animation(params)
     animator.replay_animation(params, sim.u_history)
-    
-    return history
-
 
 if __name__ == "__main__":
     main()

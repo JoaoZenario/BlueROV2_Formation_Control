@@ -149,6 +149,21 @@ class Animation():
             self.ax_accel.legend(loc='upper right', fontsize='xx-small', ncol=2)
 
     #* Function to gather and store the data in order to update the simulation and plots. 
+    def _safe_set_data(self, line, x, y):
+        # Avoid mismatched x/y lengths, which cause matplotlib broadcasting failures.
+        x = np.asarray(x)
+        y = np.asarray(y)
+
+        if x.size == 0 or y.size == 0:
+            line.set_data([], [])
+            return
+
+        if x.size != y.size:
+            n = min(x.size, y.size)
+            line.set_data(x[:n], y[:n])
+        else:
+            line.set_data(x, y)
+
     def plot_data(self, frame, params, u):
         edge_count = 0
         current_max_dist = 0
@@ -166,7 +181,7 @@ class Animation():
             if params.dim == 3:
                 self.dots[i].set_3d_properties([params.x[i, 2]]) # z.
             # Update the trails on the plot (only up to current frame).
-            self.trails[i].set_data(params.history[:frame+1, i, 0], params.history[:frame+1, i, 1]) # x and y.
+            self._safe_set_data(self.trails[i], params.history[:frame+1, i, 0], params.history[:frame+1, i, 1])
             if params.dim == 3:
                 self.trails[i].set_3d_properties(params.history[:frame+1, i, 2]) # z.
             # Distance (to leader).
@@ -180,9 +195,9 @@ class Animation():
                 if params.A[i, j] == 1:
                     z_k_hist = params.history[:frame+1, i, :] - params.history[:frame+1, j, :]
                     dist_hist = np.linalg.norm(z_k_hist, axis=1)
-                    self.dist_lines[edge_count].set_data(time_axis, dist_hist)
+                    self._safe_set_data(self.dist_lines[edge_count], time_axis, dist_hist)
 
-                    d = dist_hist[-1]
+                    d = dist_hist[-1] if dist_hist.size > 0 else 0
 
                     # Update workspace line position.
                     pos_i = params.x[i]
@@ -206,24 +221,26 @@ class Animation():
                     if d > current_max_dist:
                         current_max_dist = d
             # Velocity (only up to current frame).
-            self.vel_lines[i].set_data(time_axis, params.vel_history[:frame+1, i])
-            if params.mode_dynamics:
-                speed = np.linalg.norm(params.v[i]) # Compute the speed using the Euclidean norm: |v| = √(u_x² + u_y² + u_z²).  
+            self._safe_set_data(self.vel_lines[i], time_axis, params.vel_history[:frame+1, i])
+            # Use recorded velocity magnitude rather than possibly stale params.v (especially during replay).
+            if frame < params.vel_history.shape[0]:
+                speed = params.vel_history[frame, i]
             else:
-                speed = np.linalg.norm(u[i]) # Compute the speed using the Euclidean norm: |v| = √(u_x² + u_y² + u_z²).
+                speed = params.vel_history[-1, i]
+
             stats += f"ROV {i+1} Vel: {speed:5.2f} m/s\n"
             # Acceleration (only up to current frame).
             if params.mode_dynamics:
-                self.accel_lines[i].set_data(time_axis, params.accel_history[:frame+1, i])
+                self._safe_set_data(self.accel_lines[i], time_axis, params.accel_history[:frame+1, i])
             # Formation error (only up to current frame).
-            self.err_lines[i].set_data(time_axis, params.err_history[:frame+1, i])
+            self._safe_set_data(self.err_lines[i], time_axis, params.err_history[:frame+1, i])
             # Field of View error (only up to current frame).
             if params.fov:
                 err_x = params.fov_history[:frame+1, i, 0] 
                 err_y = params.fov_history[:frame+1, i, 1]
                 
-                self.fov_x_lines[i].set_data(time_axis, err_x)
-                self.fov_y_lines[i].set_data(time_axis, err_y)
+                self._safe_set_data(self.fov_x_lines[i], time_axis, err_x)
+                self._safe_set_data(self.fov_y_lines[i], time_axis, err_y)
                 self.fov_shadow(params, i)
 
         self.telemetry_text.set_text(stats) # Store the statistics for the animation.
@@ -270,7 +287,10 @@ class Animation():
         self.ax_vel.set_xlim(0, params.steps * params.dt)
         if params.vel_history.size > 0:
             # Look at the maximum velocity in the current iteration across all agents (for velocity plot).
-            current_max_vel = np.max(params.vel_history[frame, :])
+            if frame < params.vel_history.shape[0]:
+                current_max_vel = np.max(params.vel_history[frame, :])
+            else:
+                current_max_vel = np.max(params.vel_history[-1, :])
             self.ax_vel.set_ylim(0, max(params.v_max * 1.05, current_max_vel * 1.2))
         # Acceleration.
         if params.mode_dynamics:
@@ -280,7 +300,10 @@ class Animation():
         if params.err_history.size > 0:
             self.ax_err.set_xlim(0, params.steps * params.dt)
             # Look at the maximum formation error in the current iteration across all agents (for error plot).
-            current_max_err = np.max(params.err_history[frame, :])
+            if frame < params.err_history.shape[0]:
+                current_max_err = np.max(params.err_history[frame, :])
+            else:
+                current_max_err = np.max(params.err_history[-1, :])
             self.ax_err.set_ylim(0, max(10.0, current_max_err * 1.2))
         # FOV (Horizontal and Vertical).
         if params.fov and params.fov_history.size > 0:
@@ -291,8 +314,12 @@ class Animation():
             limit_deg_y = np.degrees(params.theta_max_y)
 
             # Current max angle error.
-            current_max_abs_x = np.max(np.abs(params.fov_history[frame, :, 0]))
-            current_max_abs_y = np.max(np.abs(params.fov_history[frame, :, 1]))
+            if frame < params.fov_history.shape[0]:
+                current_max_abs_x = np.max(np.abs(params.fov_history[frame, :, 0]))
+                current_max_abs_y = np.max(np.abs(params.fov_history[frame, :, 1]))
+            else:
+                current_max_abs_x = np.max(np.abs(params.fov_history[-1, :, 0]))
+                current_max_abs_y = np.max(np.abs(params.fov_history[-1, :, 1]))
 
             win_x = max(limit_deg_x + 5, current_max_abs_x * 1.1)
             self.ax_fov_x.set_ylim(-win_x, win_x)
