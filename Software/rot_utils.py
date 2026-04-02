@@ -1,6 +1,10 @@
 import numpy as np
 from scipy.spatial.transform import Rotation as R
 
+from math_utils import normalize_vector
+
+Array = np.ndarray
+
 
 def ZYXeul2quat(roll, pitch, yaw):
     """
@@ -11,6 +15,32 @@ def ZYXeul2quat(roll, pitch, yaw):
     r = R.from_euler("ZYX", [yaw, pitch, roll], degrees=False)  # note order for SciPy
     qxyzw = r.as_quat()  # [x, y, z, w]
     return np.array([qxyzw[3], qxyzw[0], qxyzw[1], qxyzw[2]])
+
+
+def quaternion_to_roll_pitch_yaw(q: np.ndarray) -> tuple[float, float, float]:
+    """
+    Convert quaternion [x, y, z, w] to ZYX roll, pitch, yaw.
+    """
+    qx, qy, qz, qw = normalize_vector(q)
+
+    # roll
+    sinr_cosp = 2.0 * (qw * qx + qy * qz)
+    cosr_cosp = 1.0 - 2.0 * (qx * qx + qy * qy)
+    roll = np.arctan2(sinr_cosp, cosr_cosp)
+
+    # pitch
+    sinp = 2.0 * (qw * qy - qz * qx)
+    if abs(sinp) >= 1.0:
+        pitch = np.sign(sinp) * (np.pi / 2.0)
+    else:
+        pitch = np.arcsin(sinp)
+
+    # yaw
+    siny_cosp = 2.0 * (qw * qz + qx * qy)
+    cosy_cosp = 1.0 - 2.0 * (qy * qy + qz * qz)
+    yaw = np.arctan2(siny_cosp, cosy_cosp)
+
+    return roll, pitch, yaw
 
 
 def quat_mul(q1, q2):
@@ -48,6 +78,30 @@ def quatKDE(q: np.ndarray, body_omega: np.ndarray) -> np.ndarray:
         raise ValueError("body_omega must be shape (3,)")
 
     return 0.5 * omega_matrix(omega) @ q
+
+
+def quaternion_derivative_body_rates(q: np.ndarray, omega: np.ndarray) -> np.ndarray:
+    """
+    Quaternion derivative for body-frame angular velocity.
+
+    Quaternion convention: q = [qx, qy, qz, qw] (scalar last).
+
+    Implements:
+        q_dot = 0.5 * q ⊗ [omega, 0]
+    """
+    qx, qy, qz, qw = normalize_vector(q)
+    wx, wy, wz = np.asarray(omega, dtype=float).reshape(3)
+
+    qdot = 0.5 * np.array(
+        [
+            qw * wx + qy * wz - qz * wy,
+            qw * wy + qz * wx - qx * wz,
+            qw * wz + qx * wy - qy * wx,
+            -(qx * wx + qy * wy + qz * wz),
+        ],
+        dtype=float,
+    )
+    return qdot
 
 
 def vrrotvec2mat(axis: np.ndarray, angle: float) -> np.ndarray:
@@ -92,6 +146,14 @@ def quat2rotm(q: np.ndarray) -> np.ndarray:
         ]
     )
     return Rm
+
+
+def rotation_matrix_from_quaternion(q: Array) -> Array:
+    """
+    SciPy convention: quaternion = [x, y, z, w]
+    """
+    q = np.asarray(q, dtype=float).reshape(4)
+    return R.from_quat(q).as_matrix()
 
 
 def yaw_from_quat(q: np.ndarray) -> float:

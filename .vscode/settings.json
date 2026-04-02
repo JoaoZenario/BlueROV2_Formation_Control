@@ -1,0 +1,31 @@
+{
+    "ROS2.distro": "jazzy",
+    "python.autoComplete.extraPaths": [
+        "/home/nicola/discower_ws/install/ros-fmq-bridge/lib/python3.12/site-packages",
+        "/home/nicola/discower_ws/install/px4_mpc/lib/python3.12/site-packages",
+        "/home/nicola/discower_ws/build/gcs_stl",
+        "/home/nicola/discower_ws/install/gcs_stl/lib/python3.12/site-packages",
+        "/home/nicola/discower_ws/install/discower_launch/lib/python3.12/site-packages",
+        "/home/nicola/discower_ws/build/atmos_fmq",
+        "/home/nicola/discower_ws/install/atmos_fmq/lib/python3.12/site-packages",
+        "/home/nicola/discower_ws/install/atmos_fmq_msgs/lib/python3.12/site-packages",
+        "/home/nicola/discower_ws/install/px4_msgs/lib/python3.12/site-packages",
+        "/home/nicola/discower_ws/install/mpc_msgs/lib/python3.12/site-packages",
+        "/home/nicola/discower_ws/install/gcs-stl/lib/python3.12/site-packages",
+        "/opt/ros/jazzy/lib/python3.12/site-packages"
+    ],
+    "python.analysis.extraPaths": [
+        "/home/nicola/discower_ws/install/ros-fmq-bridge/lib/python3.12/site-packages",
+        "/home/nicola/discower_ws/install/px4_mpc/lib/python3.12/site-packages",
+        "/home/nicola/discower_ws/build/gcs_stl",
+        "/home/nicola/discower_ws/install/gcs_stl/lib/python3.12/site-packages",
+        "/home/nicola/discower_ws/install/discower_launch/lib/python3.12/site-packages",
+        "/home/nicola/discower_ws/build/atmos_fmq",
+        "/home/nicola/discower_ws/install/atmos_fmq/lib/python3.12/site-packages",
+        "/home/nicola/discower_ws/install/atmos_fmq_msgs/lib/python3.12/site-packages",
+        "/home/nicola/discower_ws/install/px4_msgs/lib/python3.12/site-packages",
+        "/home/nicola/discower_ws/install/mpc_msgs/lib/python3.12/site-packages",
+        "/home/nicola/discower_ws/install/gcs-stl/lib/python3.12/site-packages",
+        "/opt/ros/jazzy/lib/python3.12/site-packages"
+    ]
+}

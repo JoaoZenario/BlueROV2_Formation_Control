@@ -164,16 +164,16 @@ def generate_random_connected_graph(
 
         # Two nodes are neighbors if d_min <= dist <= d_max
         A = (dist <= d_max) & (dist >= d_min)
-        A = A.astype(int) # Convert boolean to integer (0 or 1)
+        A = A.astype(int)  # Convert boolean to integer (0 or 1)
 
         # In order to transform in a directed system (strictily lower triangular matrix).
         # This guarantees that a spanning tree exists and therefore that the system is stable.
-        A = np.tril(A, k=-1) 
+        A = np.tril(A, k=-1)
 
         for i in range(1, N):
             # Check how many agents agent i is following.
             connected_parents = np.where(A[i, :] == 1)[0]
-            
+
             # Field of View constraint is applied.
             if fov:
                 # Agent i is connected to more that one agent.
@@ -181,9 +181,9 @@ def generate_random_connected_graph(
                     # An agent must be connected to only one other agent because it might not be able to "look" at two or more agents simultaneously.
                     # Keep the lowest ID.
                     best_parent = np.min(connected_parents)
-                    A[i, :] = 0 # Clear all connections for this row.
-                    A[i, best_parent] = 1 # Keep only one.
-                    
+                    A[i, :] = 0  # Clear all connections for this row.
+                    A[i, best_parent] = 1  # Keep only one.
+
             # Digraph case.
             if mode:
                 # Safety Check: If an agent follows no one, it's lost. It must follow someone to stay in formation.
@@ -191,7 +191,6 @@ def generate_random_connected_graph(
                     # Connect to a random agent with a lower index.
                     random_parent = np.random.randint(0, i)
                     A[i, random_parent] = 1
-                    
 
         # 4. Check Connectivity
         # MATLAB: connected = all( all( A^N ) ) is an algebraic check for connectivity
@@ -219,72 +218,132 @@ def generate_random_connected_graph(
 
 
 def plot_graph_from_adjacency(
-    P: np.ndarray,
-    A: np.ndarray,
-    mode: bool,
-    title: str = "Connected Proximity Graph Topology",
+    positions: np.ndarray,
+    adjacency: np.ndarray,
+    directed: bool = True,
+    title: str = "Graph Topology",
     show: bool = True,
-    **kwargs: Dict[str, Any],
+    save_path: str | None = None,
+    ax=None,
 ):
     """
-    Plots a graph given its positions and adjacency matrix.
+    Plot a graph from an adjacency matrix.
 
-    Args:
-        P (np.ndarray): NxD matrix of node positions.
-        A (np.ndarray): NxN adjacency matrix (0-1).
-        title (str): Title for the plot.
-        **kwargs: Optional keyword arguments passed to nx.draw_networkx,
-                  like node_color, node_size, etc.
+    Parameters
+    ----------
+    positions : np.ndarray, shape (N, 2) or (N, 3)
+        Node positions.
+    adjacency : np.ndarray, shape (N, N)
+        Adjacency matrix.
+    directed : bool
+        Whether to interpret the graph as directed.
+    title : str
+        Figure title.
+    show : bool
+        Whether to call plt.show().
+    save_path : str | None
+        If provided, save the figure to this path.
+    ax : matplotlib axis | None
+        Optional existing axis.
     """
-    N = P.shape[0]
+    positions = np.asarray(positions, dtype=float)
+    adjacency = np.asarray(adjacency)
 
-    # 1. Create the NetworkX Graph object
-    if mode:
-        G = nx.DiGraph(A)
+    if positions.ndim != 2 or positions.shape[1] not in (2, 3):
+        raise ValueError("positions must have shape (N,2) or (N,3)")
+    if adjacency.shape[0] != adjacency.shape[1]:
+        raise ValueError("adjacency must be square")
+    if adjacency.shape[0] != positions.shape[0]:
+        raise ValueError("adjacency and positions size mismatch")
+
+    dim = positions.shape[1]
+    created_fig = False
+
+    if ax is None:
+        fig = plt.figure(figsize=(7, 6))
+        if dim == 3:
+            ax = fig.add_subplot(111, projection="3d")
+        else:
+            ax = fig.add_subplot(111)
+        created_fig = True
     else:
-        G = nx.Graph(A)
+        fig = ax.figure
 
-    # 2. Map the positions from the P matrix to the required NetworkX dictionary format
-    # The dictionary keys must be the node indices (0 to N-1)
-    # The values must be the coordinates (e.g., [x, y]) - use only first 2 dimensions for visualization
-    pos = {i: P[i, :2] for i in range(N)}
+    # plot nodes
+    if dim == 3:
+        ax.scatter(positions[:, 0], positions[:, 1], positions[:, 2], s=50)
+        for i, p in enumerate(positions):
+            ax.text(p[0], p[1], p[2], f"{i}", fontsize=9)
+    else:
+        ax.scatter(positions[:, 0], positions[:, 1], s=50)
+        for i, p in enumerate(positions):
+            ax.text(p[0], p[1], f"{i}", fontsize=9)
 
-    # 3. Prepare the labels (Agent 1, Agent 2, ...)
-    labels = {i: str(i + 1) for i in range(N)}  # Use 1-based indexing for display
+    # plot edges
+    N = positions.shape[0]
+    for i in range(N):
+        for j in range(N):
+            if adjacency[i, j] != 1:
+                continue
 
-    # 4. Set default plotting parameters, allowing kwargs to override
-    draw_params = {
-        "node_color": "#007ACC",
-        "node_size": 400,
-        "edge_color": "#AAAAAA",
-        "width": 1.5,
-        "with_labels": False,  # We'll draw labels separately for better control
-        "font_weight": "bold",
-        "font_color": "white",
-        **kwargs,
-    }
+            pi = positions[i]
+            pj = positions[j]
 
-    # 5. Plotting
-    plt.figure(figsize=(8, 8))
-    plt.title(title)
+            if dim == 3:
+                ax.plot(
+                    [pi[0], pj[0]],
+                    [pi[1], pj[1]],
+                    [pi[2], pj[2]],
+                    color="gray",
+                    alpha=0.8,
+                )
+            else:
+                ax.plot([pi[0], pj[0]], [pi[1], pj[1]], color="gray", alpha=0.8)
 
-    # Draw nodes and edges
-    nx.draw(G, pos, **draw_params)
+            if directed and dim == 2:
+                d = pj[:2] - pi[:2]
+                n = np.linalg.norm(d)
+                if n > 1e-9:
+                    d = d / n
+                    start = pi[:2] + 0.1 * d
+                    delta = (pj[:2] - pi[:2]) - 0.2 * d
+                    ax.arrow(
+                        start[0],
+                        start[1],
+                        delta[0],
+                        delta[1],
+                        head_width=0.08,
+                        head_length=0.12,
+                        fc="gray",
+                        ec="gray",
+                        length_includes_head=True,
+                        alpha=0.7,
+                    )
 
-    # Draw labels separately
-    nx.draw_networkx_labels(G, pos, labels=labels, font_color="white", font_size=10)
+    ax.set_title(title)
+    ax.set_xlabel("X")
+    ax.set_ylabel("Y")
+    if dim == 3:
+        ax.set_zlabel("Z")
 
-    # Ensure the axes match the bounds of the generated positions
-    x_min, x_max = np.min(P[:, 0]), np.max(P[:, 0])
-    y_min, y_max = np.min(P[:, 1]), np.max(P[:, 1])
-    plt.xlim(x_min - 0.1 * (x_max - x_min), x_max + 0.1 * (x_max - x_min))
-    plt.ylim(y_min - 0.1 * (y_max - y_min), y_max + 0.1 * (y_max - y_min))
-    plt.gca().set_aspect("equal", adjustable="box")
-    plt.grid(True, linestyle="--", alpha=0.6)
-    if show:
+    mins = np.min(positions, axis=0)
+    maxs = np.max(positions, axis=0)
+    pad = 0.5
+    ax.set_xlim(mins[0] - pad, maxs[0] + pad)
+    ax.set_ylim(mins[1] - pad, maxs[1] + pad)
+    if dim == 3:
+        ax.set_zlim(mins[2] - pad, maxs[2] + pad)
+
+    if save_path is not None:
+        fig.savefig(save_path, dpi=200, bbox_inches="tight")
+
+    if show and created_fig:
         plt.show()
 
-#* Function to verifiy if there exists a spanning tree in the generated graph.
+    return fig, ax
+
+
+# * Function to verifiy if there exists a spanning tree in the generated graph.
 def check_consensus_capability(A):
     # For a directed graph, all non-zero eigenvalues of L have positive real parts and 0 is a simple eigenvalue if and only if the directed graph contains a directed spanning tree.
 
@@ -299,18 +358,19 @@ def check_consensus_capability(A):
     # Count zeros (using a small epsilon for numerical stability).
     zeros = [ev for ev in eigenvalues if abs(ev) < 1e-10]
     non_zeros = [ev for ev in eigenvalues if abs(ev) >= 1e-10]
-    
+
     # Verify if it's a simple zero.
-    is_simple_zero = (len(zeros) == 1)
-    
+    is_simple_zero = len(zeros) == 1
+
     # Positive Real Parts.
     # .real is used because eigenvalues can be complex numbers (a + bi).
     all_positive_real = all(ev.real > 0 for ev in non_zeros)
-    
+
     if is_simple_zero and all_positive_real:
         return True
     else:
         return False
+
 
 # --- Example Usage ---
 if __name__ == "__main__":
