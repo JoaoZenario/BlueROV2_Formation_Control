@@ -19,6 +19,7 @@ class Animation:
         self.N = self.cfg.N
         self.dim = self.cfg.dim
         self.is_3d = self.cfg.dim == 3
+        self.debug_history = getattr(self.data, "debug_history", [])
 
         self.colors = [
             "#{:02X}{:02X}{:02X}".format(int(r * 255), int(g * 255), int(b * 255))
@@ -138,14 +139,16 @@ class Animation:
         self.ax_vel.set_ylabel("Speed")
         self.ax_acc.set_ylabel("Acceleration")
 
+        self.dist_dmax_line = None
+        self.dist_dmin_line = None
         if self.cfg.conn:
-            self.ax_dist.axhline(
-                self.cfg.d_max, color="r", ls="--", alpha=0.8, label="d_max"
-            )
+            self.dist_dmax_line = self.ax_dist.plot(
+                [], [], color="r", ls="--", alpha=0.8, label="d_max"
+            )[0]
         if self.cfg.coll:
-            self.ax_dist.axhline(
-                self.cfg.d_min, color="darkred", ls="--", alpha=0.8, label="d_min"
-            )
+            self.dist_dmin_line = self.ax_dist.plot(
+                [], [], color="darkred", ls="--", alpha=0.8, label="d_min"
+            )[0]
 
         self.ax_vel.axhline(
             self.cfg.v_max, color="k", ls="--", alpha=0.5, label="v_max"
@@ -268,19 +271,29 @@ class Animation:
             self.fig_telemetry.add_subplot(force_gs[0, k])
             for k in range(n_force_panels)
         ]
+        self.force_limit_pos_lines = []
+        self.force_limit_neg_lines = []
         for k, ax in enumerate(self.ax_force_panels):
             ax.set_title(panel_titles[k])
             ax.set_xlabel("Time (s)")
             ax.set_ylabel(force_ylabel)
             if force_limit is not None:
-                ax.axhline(
-                    force_limit,
-                    color="r",
-                    ls="--",
-                    alpha=0.8,
-                    label=force_limit_label if k == 0 else None,
+                self.force_limit_pos_lines.append(
+                    ax.plot(
+                        [],
+                        [],
+                        color="r",
+                        ls="--",
+                        alpha=0.8,
+                        label=force_limit_label if k == 0 else None,
+                    )[0]
                 )
-                ax.axhline(-force_limit, color="r", ls="--", alpha=0.8)
+                self.force_limit_neg_lines.append(
+                    ax.plot([], [], color="r", ls="--", alpha=0.8)[0]
+                )
+            else:
+                self.force_limit_pos_lines.append(None)
+                self.force_limit_neg_lines.append(None)
 
         # Create force_lines: flat list indexed [panel_idx * N + agent]
         # or for thrusters [thruster * N + agent]
@@ -337,6 +350,81 @@ class Animation:
             return
         n = min(x.size, y.size)
         line.set_data(x[:n], y[:n])
+
+    def _extract_distance_limits(self, frame: int):
+        n = frame + 1
+        t = np.arange(n) * self.cfg.dt
+        d_min = np.full(n, self.cfg.d_min, dtype=float)
+        d_max = np.full(n, self.cfg.d_max, dtype=float)
+
+        if not self.debug_history:
+            return t, d_min, d_max
+
+        for k in range(min(n, len(self.debug_history))):
+            step_debug = self.debug_history[k]
+            dmin_vals = []
+            dmax_vals = []
+            if isinstance(step_debug, list):
+                for dbg in step_debug:
+                    if not isinstance(dbg, dict):
+                        continue
+                    if "d_min_eff" in dbg:
+                        dmin_vals.extend(
+                            np.asarray(dbg["d_min_eff"], dtype=float).reshape(-1)
+                        )
+                    if "d_max_eff" in dbg:
+                        dmax_vals.extend(
+                            np.asarray(dbg["d_max_eff"], dtype=float).reshape(-1)
+                        )
+            if dmin_vals:
+                d_min[k] = float(np.max(dmin_vals))
+            if dmax_vals:
+                d_max[k] = float(np.min(dmax_vals))
+
+        return t, d_min, d_max
+
+    def _extract_force_limits(self, frame: int, panel_idx: int):
+        n = frame + 1
+        t = np.arange(n) * self.cfg.dt
+        if self._force_limit is None:
+            return t, None
+
+        lim = np.full(n, float(self._force_limit), dtype=float)
+        if not self.debug_history:
+            return t, lim
+
+        for k in range(min(n, len(self.debug_history))):
+            step_debug = self.debug_history[k]
+            cand = []
+            if not isinstance(step_debug, list):
+                continue
+            for dbg in step_debug:
+                if not isinstance(dbg, dict):
+                    continue
+                if "tau_v_max_eff" in dbg:
+                    cand.extend(
+                        np.asarray(dbg["tau_v_max_eff"], dtype=float).reshape(-1)
+                    )
+                if "tau_v_max" in dbg:
+                    cand.extend(np.asarray(dbg["tau_v_max"], dtype=float).reshape(-1))
+                if "f_max" in dbg:
+                    fmax = np.asarray(dbg["f_max"], dtype=float).reshape(-1)
+                    if fmax.size:
+                        if self._force_comp_slices is None:
+                            cand.append(float(np.max(np.abs(fmax))))
+                        elif panel_idx < fmax.size:
+                            cand.append(float(abs(fmax[panel_idx])))
+                if "f_min" in dbg:
+                    fmin = np.asarray(dbg["f_min"], dtype=float).reshape(-1)
+                    if fmin.size:
+                        if self._force_comp_slices is None:
+                            cand.append(float(np.max(np.abs(fmin))))
+                        elif panel_idx < fmin.size:
+                            cand.append(float(abs(fmin[panel_idx])))
+            if cand:
+                lim[k] = float(np.max(cand))
+
+        return t, lim
 
     def _get_frame_state(self, frame):
         x = self.data.history[frame]
@@ -464,6 +552,12 @@ class Animation:
         cmap = plt.get_cmap("RdYlGn_r")
         current_max_dist = 0.0
 
+        t_lim, d_min_lim, d_max_lim = self._extract_distance_limits(frame)
+        if self.dist_dmax_line is not None:
+            self._safe_set_data(self.dist_dmax_line, t_lim, d_max_lim)
+        if self.dist_dmin_line is not None:
+            self._safe_set_data(self.dist_dmin_line, t_lim, d_min_lim)
+
         for idx, (i, j) in enumerate(self.edge_pairs):
             rel_hist = (
                 self.data.history[: frame + 1, i, :]
@@ -521,6 +615,17 @@ class Animation:
                         if u_hist.shape[-1] > k:
                             self._safe_set_data(line, t, u_hist[:, i, k])
 
+        for k, _ax in enumerate(self.ax_force_panels):
+            line_p = self.force_limit_pos_lines[k]
+            line_n = self.force_limit_neg_lines[k]
+            if line_p is None or line_n is None:
+                continue
+            t_f, lim_f = self._extract_force_limits(frame, k)
+            if lim_f is None:
+                continue
+            self._safe_set_data(line_p, t_f, lim_f)
+            self._safe_set_data(line_n, t_f, -lim_f)
+
         # Mean formation error in meters
         if self.N > 1:
             mean_err = np.mean(self.data.err_history[: frame + 1, 1:], axis=1)
@@ -548,7 +653,13 @@ class Animation:
             ax.set_xlim(0, T)
 
         if frame >= 0:
-            self.ax_dist.set_ylim(0, max(self.cfg.d_max * 1.1, current_max_dist * 1.1))
+            self.ax_dist.set_ylim(
+                0,
+                max(
+                    np.max(d_max_lim) * 1.1 if d_max_lim.size else self.cfg.d_max * 1.1,
+                    current_max_dist * 1.1,
+                ),
+            )
             self.ax_vel.set_ylim(
                 0,
                 max(
@@ -578,9 +689,15 @@ class Animation:
                     # Thruster mode: all 8 components
                     n_comp = min(8, u_hist.shape[-1])
                     fdata = u_hist[:, :, :n_comp]
+                    _, lim_series = self._extract_force_limits(frame, 0)
+                    lim_ref = (
+                        np.max(np.abs(lim_series))
+                        if lim_series is not None
+                        else force_ref
+                    )
                     y_top = max(
                         np.max(np.abs(fdata)) * 1.1 if fdata.size else 0.1,
-                        (force_ref * 1.2 if force_ref is not None else 0.1),
+                        (lim_ref * 1.2 if lim_ref is not None else 0.1),
                         0.1,
                     )
                     self.ax_force_panels[0].set_ylim(-y_top, y_top)
@@ -588,9 +705,15 @@ class Animation:
                     for k, ax in enumerate(self.ax_force_panels):
                         if u_hist.shape[-1] > k:
                             fvals = u_hist[:, :, k]
+                            _, lim_series = self._extract_force_limits(frame, k)
+                            lim_ref = (
+                                np.max(np.abs(lim_series))
+                                if lim_series is not None
+                                else force_ref
+                            )
                             y_top = max(
                                 np.max(np.abs(fvals)) * 1.1 if fvals.size else 0.1,
-                                (force_ref * 1.2 if force_ref is not None else 0.1),
+                                (lim_ref * 1.2 if lim_ref is not None else 0.1),
                                 0.1,
                             )
                             ax.set_ylim(-y_top, y_top)

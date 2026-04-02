@@ -21,25 +21,6 @@ Array = np.ndarray
 class BarrierConfig:
     """
     Configuration parameters shared by all controllers.
-
-    Attributes
-    ----------
-    dim : int
-        Dimension of the relative-position space (typically 2 or 3).
-    d_min : float
-        Minimum admissible inter-agent distance for collision avoidance.
-    d_max : float
-        Maximum admissible inter-agent distance for connectivity maintenance.
-    k_form : float
-        Gain of the nominal quadratic formation potential.
-    use_connectivity : bool
-        Whether the connectivity barrier is active.
-    use_collision : bool
-        Whether the collision-avoidance barrier is active.
-    use_recentered : bool
-        Whether to use the recentered barrier or the raw barrier.
-    eps : float
-        Small positive constant used to prevent numerical division by zero.
     """
 
     dim: int
@@ -50,6 +31,21 @@ class BarrierConfig:
     use_collision: bool = True
     use_recentered: bool = True
     eps: float = 1e-9
+
+    # --------------------------------------------------------
+    # Adaptive barrier-domain relaxation
+    # --------------------------------------------------------
+    use_adaptive_barrier: bool = False
+
+    lambda_delta: float = 2.0
+    gamma_delta: float = 1.0
+    sigma_delta_max: float = 0.0
+
+    lambda_Delta: float = 2.0
+    gamma_Delta: float = 1.0
+    sigma_Delta_max: float = 0.0
+
+    adaptive_dt: float = 0.01
 
     def __post_init__(self) -> None:
         if self.dim <= 0:
@@ -62,6 +58,30 @@ class BarrierConfig:
             raise ValueError("k_form must be nonnegative.")
         if self.eps <= 0.0:
             raise ValueError("eps must be positive.")
+
+        if self.lambda_delta <= 0.0:
+            raise ValueError("lambda_delta must be positive.")
+        if self.gamma_delta < 0.0:
+            raise ValueError("gamma_delta must be nonnegative.")
+        if self.sigma_delta_max < 0.0:
+            raise ValueError("sigma_delta_max must be nonnegative.")
+
+        if self.lambda_Delta <= 0.0:
+            raise ValueError("lambda_Delta must be positive.")
+        if self.gamma_Delta < 0.0:
+            raise ValueError("gamma_Delta must be nonnegative.")
+        if self.sigma_Delta_max < 0.0:
+            raise ValueError("sigma_Delta_max must be nonnegative.")
+
+        if self.adaptive_dt <= 0.0:
+            raise ValueError("adaptive_dt must be positive.")
+
+        if self.use_adaptive_barrier:
+            if self.sigma_delta_max + self.sigma_Delta_max >= self.d_max - self.d_min:
+                raise ValueError(
+                    "sigma_delta_max + sigma_Delta_max must be strictly smaller "
+                    "than d_max - d_min."
+                )
 
 
 class ControllerBase(ABC):
@@ -82,6 +102,13 @@ class ControllerBase(ABC):
     def __init__(self, robot_id: int, config: BarrierConfig):
         self.robot_id = robot_id
         self.cfg = config
+
+        # One adaptive margin per local edge
+        self.sigma_delta = np.zeros(0, dtype=float)
+        self.sigma_Delta = np.zeros(0, dtype=float)
+
+        # Activation to be applied at the next step
+        self._pending_barrier_activation = 0.0
 
     # ============================================================
     # Utility methods
@@ -109,23 +136,23 @@ class ControllerBase(ABC):
         x = np.asarray(x, dtype=float).reshape(-1)
         return float(x @ x)
 
-    def is_admissible(self, d: Array) -> bool:
-        """
-        Check whether a relative displacement lies in the admissible set
-
-            d_min < ||d|| < d_max.
-        """
+    def is_admissible(self, d: Array, edge_idx: Optional[int] = None) -> bool:
         d = self._as_vector(d, "d")
         d_norm = np.linalg.norm(d)
-        return (self.cfg.d_min < d_norm) and (d_norm < self.cfg.d_max)
+        d_min_eff, d_max_eff = self.effective_margins(edge_idx)
+        return (d_min_eff < d_norm) and (d_norm < d_max_eff)
 
-    def validate_desired_relative_state(self, d_des: Array) -> None:
-        """Raise if the desired relative displacement is not admissible."""
+    def validate_desired_relative_state(
+        self,
+        d_des: Array,
+        edge_idx: Optional[int] = None,
+    ) -> None:
         d_des = self._as_vector(d_des, "d_des")
-        if not self.is_admissible(d_des):
+        if not self.is_admissible(d_des, edge_idx=edge_idx):
+            d_min_eff, d_max_eff = self.effective_margins(edge_idx)
             raise ValueError(
                 "Desired relative displacement is not admissible: "
-                f"||d_des|| must satisfy {self.cfg.d_min} < ||d_des|| < {self.cfg.d_max}."
+                f"||d_des|| must satisfy {d_min_eff} < ||d_des|| < {d_max_eff}."
             )
 
     def _class_k(self, V: float) -> float:
@@ -149,26 +176,103 @@ class ControllerBase(ABC):
             return alpha * float(V)
         return float(sat * np.tanh(alpha * float(V) / sat))
 
+    def _ensure_adaptive_state_size(self, n_edges: int) -> None:
+        if self.sigma_delta.size == n_edges and self.sigma_Delta.size == n_edges:
+            return
+        self.sigma_delta = np.zeros(n_edges, dtype=float)
+        self.sigma_Delta = np.zeros(n_edges, dtype=float)
+
+    def set_barrier_activation(self, psi: float) -> None:
+        """
+        Store the activation signal to be used by the adaptive barrier dynamics
+        at the next control step.
+        """
+        self._pending_barrier_activation = max(float(psi), 0.0)
+
+    def update_adaptive_barrier_state(self, n_edges: int) -> None:
+        """
+        Update the auxiliary dynamics:
+            dot(sigma_delta) = -lambda_delta sigma_delta + gamma_delta psi
+            dot(sigma_Delta) = -lambda_Delta sigma_Delta + gamma_Delta psi
+        """
+        if not self.cfg.use_adaptive_barrier:
+            return
+
+        self._ensure_adaptive_state_size(n_edges)
+
+        psi = self._pending_barrier_activation
+        dt = self.cfg.adaptive_dt
+
+        self.sigma_delta += dt * (
+            -self.cfg.lambda_delta * self.sigma_delta + self.cfg.gamma_delta * psi
+        )
+        self.sigma_Delta += dt * (
+            -self.cfg.lambda_Delta * self.sigma_Delta + self.cfg.gamma_Delta * psi
+        )
+
+        self.sigma_delta = np.clip(self.sigma_delta, 0.0, self.cfg.sigma_delta_max)
+        self.sigma_Delta = np.clip(self.sigma_Delta, 0.0, self.cfg.sigma_Delta_max)
+
+        # Preserve strict ordering d_min_eff < d_max_eff
+        for k in range(n_edges):
+            d_min_eff = self.cfg.d_min + self.sigma_delta[k]
+            d_max_eff = self.cfg.d_max - self.sigma_Delta[k]
+            if d_max_eff <= d_min_eff + self.cfg.eps:
+                gap = 0.5 * (self.cfg.d_max - self.cfg.d_min - self.cfg.eps)
+                self.sigma_delta[k] = min(self.sigma_delta[k], gap)
+                self.sigma_Delta[k] = min(self.sigma_Delta[k], gap)
+
+    def effective_margins(self, edge_idx: Optional[int] = None) -> Tuple[float, float]:
+        """
+        Return effective margins (d_min_eff, d_max_eff).
+        """
+        if (not self.cfg.use_adaptive_barrier) or edge_idx is None:
+            return self.cfg.d_min, self.cfg.d_max
+
+        if edge_idx < 0 or edge_idx >= self.sigma_delta.size:
+            raise IndexError("edge_idx out of range for adaptive barrier state.")
+
+        d_min_eff = self.cfg.d_min + self.sigma_delta[edge_idx]
+        d_max_eff = self.cfg.d_max - self.sigma_Delta[edge_idx]
+        return d_min_eff, d_max_eff
+
+    def current_effective_margins(self) -> Tuple[Array, Array]:
+        if not self.cfg.use_adaptive_barrier:
+            return (
+                np.full(self.sigma_delta.shape, self.cfg.d_min, dtype=float),
+                np.full(self.sigma_Delta.shape, self.cfg.d_max, dtype=float),
+            )
+        return (
+            self.cfg.d_min + self.sigma_delta.copy(),
+            self.cfg.d_max - self.sigma_Delta.copy(),
+        )
+
     # ============================================================
     # Connectivity barrier
     # B_conn(d) = ln( d_max^2 / (d_max^2 - ||d||^2) )
     # ∇B_conn(d) = 2 d / (d_max^2 - ||d||^2)
     # ============================================================
 
-    def connectivity_barrier(self, d: Array) -> float:
+    def connectivity_barrier(self, d: Array, edge_idx: Optional[int] = None) -> float:
         d = self._as_vector(d, "d")
         if not self.cfg.use_connectivity:
             return 0.0
 
-        denom = self._safe_positive(self.cfg.d_max**2 - self.norm_sq(d))
-        return float(np.log(self.cfg.d_max**2 / denom))
+        _, d_max_eff = self.effective_margins(edge_idx)
+        denom = self._safe_positive(d_max_eff**2 - self.norm_sq(d))
+        return float(np.log(d_max_eff**2 / denom))
 
-    def grad_connectivity_barrier(self, d: Array) -> Array:
+    def grad_connectivity_barrier(
+        self,
+        d: Array,
+        edge_idx: Optional[int] = None,
+    ) -> Array:
         d = self._as_vector(d, "d")
         if not self.cfg.use_connectivity:
             return np.zeros(self.cfg.dim)
 
-        denom = self._safe_positive(self.cfg.d_max**2 - self.norm_sq(d))
+        _, d_max_eff = self.effective_margins(edge_idx)
+        denom = self._safe_positive(d_max_eff**2 - self.norm_sq(d))
         return (2.0 / denom) * d
 
     # ============================================================
@@ -177,20 +281,27 @@ class ControllerBase(ABC):
     # ∇B_coll(d) = - 2 d / (||d||^2 - d_min^2)
     # ============================================================
 
-    def collision_barrier(self, d: Array) -> float:
+    def collision_barrier(self, d: Array, edge_idx: Optional[int] = None) -> float:
         d = self._as_vector(d, "d")
         if not self.cfg.use_collision:
             return 0.0
 
-        denom = self._safe_positive(self.norm_sq(d) - self.cfg.d_min**2)
-        return float(np.log(self.cfg.d_min**2 / denom))
+        d_min_eff, d_max_eff = self.effective_margins(edge_idx)
+        denom = self._safe_positive(self.norm_sq(d) - d_min_eff**2)
+        numer = self._safe_positive(d_max_eff**2 - d_min_eff**2)
+        return float(np.log(numer / denom))
 
-    def grad_collision_barrier(self, d: Array) -> Array:
+    def grad_collision_barrier(
+        self,
+        d: Array,
+        edge_idx: Optional[int] = None,
+    ) -> Array:
         d = self._as_vector(d, "d")
         if not self.cfg.use_collision:
             return np.zeros(self.cfg.dim)
 
-        denom = self._safe_positive(self.norm_sq(d) - self.cfg.d_min**2)
+        d_min_eff, _ = self.effective_margins(edge_idx)
+        denom = self._safe_positive(self.norm_sq(d) - d_min_eff**2)
         return -(2.0 / denom) * d
 
     # ============================================================
@@ -199,13 +310,15 @@ class ControllerBase(ABC):
     # ∇B(d) = ∇B_conn(d) + ∇B_coll(d)
     # ============================================================
 
-    def barrier(self, d: Array) -> float:
-        """Combined scalar barrier."""
-        return self.connectivity_barrier(d) + self.collision_barrier(d)
+    def barrier(self, d: Array, edge_idx: Optional[int] = None) -> float:
+        return self.connectivity_barrier(d, edge_idx) + self.collision_barrier(
+            d, edge_idx
+        )
 
-    def grad_barrier(self, d: Array) -> Array:
-        """Gradient of the combined scalar barrier."""
-        return self.grad_connectivity_barrier(d) + self.grad_collision_barrier(d)
+    def grad_barrier(self, d: Array, edge_idx: Optional[int] = None) -> Array:
+        return self.grad_connectivity_barrier(
+            d, edge_idx
+        ) + self.grad_collision_barrier(d, edge_idx)
 
     # ============================================================
     # Recentered barrier
@@ -214,31 +327,35 @@ class ControllerBase(ABC):
     # ∇B_rec(d) = ∇B(d) - ∇B(d_des)
     # ============================================================
 
-    def recentered_barrier(self, d: Array, d_des: Array) -> float:
-        """
-        Scalar recentered barrier around the desired relative displacement.
-        """
+    def recentered_barrier(
+        self,
+        d: Array,
+        d_des: Array,
+        edge_idx: Optional[int] = None,
+    ) -> float:
         d = self._as_vector(d, "d")
         d_des = self._as_vector(d_des, "d_des")
-        self.validate_desired_relative_state(d_des)
+        self.validate_desired_relative_state(d_des, edge_idx=edge_idx)
 
-        B_d = self.barrier(d)
-        B_des = self.barrier(d_des)
-        grad_B_des = self.grad_barrier(d_des)
+        B_d = self.barrier(d, edge_idx=edge_idx)
+        B_des = self.barrier(d_des, edge_idx=edge_idx)
+        grad_B_des = self.grad_barrier(d_des, edge_idx=edge_idx)
 
         return float(B_d - B_des - grad_B_des @ (d - d_des))
 
-    def grad_recentered_barrier(self, d: Array, d_des: Array) -> Array:
-        """
-        Gradient of the recentered barrier:
-
-            ∇B_rec(d) = ∇B(d) - ∇B(d_des)
-        """
+    def grad_recentered_barrier(
+        self,
+        d: Array,
+        d_des: Array,
+        edge_idx: Optional[int] = None,
+    ) -> Array:
         d = self._as_vector(d, "d")
         d_des = self._as_vector(d_des, "d_des")
-        self.validate_desired_relative_state(d_des)
+        self.validate_desired_relative_state(d_des, edge_idx=edge_idx)
 
-        return self.grad_barrier(d) - self.grad_barrier(d_des)
+        return self.grad_barrier(d, edge_idx=edge_idx) - self.grad_barrier(
+            d_des, edge_idx=edge_idx
+        )
 
     # ============================================================
     # Nominal formation potential
@@ -266,24 +383,28 @@ class ControllerBase(ABC):
     #        = Phi_f(d) + B(d)         otherwise
     # ============================================================
 
-    def edge_potential(self, d: Array, d_des: Array) -> float:
-        """
-        Total scalar edge potential used at the outer loop.
-        """
+    def edge_potential(
+        self,
+        d: Array,
+        d_des: Array,
+        edge_idx: Optional[int] = None,
+    ) -> float:
         if self.cfg.use_recentered:
             return self.formation_potential(d, d_des) + self.recentered_barrier(
-                d, d_des
+                d, d_des, edge_idx=edge_idx
             )
-        return self.formation_potential(d, d_des) + self.barrier(d)
+        return self.formation_potential(d, d_des) + self.barrier(d, edge_idx=edge_idx)
 
-    def grad_edge_potential(self, d: Array, d_des: Array) -> Array:
-        """
-        Gradient of the total edge potential.
-        """
+    def grad_edge_potential(
+        self,
+        d: Array,
+        d_des: Array,
+        edge_idx: Optional[int] = None,
+    ) -> Array:
         grad_form = self.grad_formation_potential(d, d_des)
         if self.cfg.use_recentered:
-            return grad_form + self.grad_recentered_barrier(d, d_des)
-        return grad_form + self.grad_barrier(d)
+            return grad_form + self.grad_recentered_barrier(d, d_des, edge_idx=edge_idx)
+        return grad_form + self.grad_barrier(d, edge_idx=edge_idx)
 
     # ============================================================
     # Batch utilities over neighbors / edges
@@ -319,11 +440,6 @@ class ControllerBase(ABC):
         relative_states: Array,
         desired_relative_states: Array,
     ) -> Array:
-        """
-        Return the gradient of the total edge potential for each edge.
-
-        Output shape: (n_edges, dim)
-        """
         relative_states = np.asarray(relative_states, dtype=float)
         desired_relative_states = np.asarray(desired_relative_states, dtype=float)
 
@@ -336,9 +452,11 @@ class ControllerBase(ABC):
                 f"relative_states must have shape (n_edges, {self.cfg.dim})."
             )
 
+        self.update_adaptive_barrier_state(relative_states.shape[0])
+
         grads = np.zeros_like(relative_states, dtype=float)
         for k, (d, d_des) in enumerate(zip(relative_states, desired_relative_states)):
-            grads[k] = self.grad_edge_potential(d, d_des)
+            grads[k] = self.grad_edge_potential(d, d_des, edge_idx=k)
         return grads
 
     # ============================================================
@@ -555,9 +673,18 @@ class SingleIntegratorController(ControllerBase):
         # --------------------------------------------------------
         if is_leader:
             if leader_velocity is None:
+                # No effective command, so no adaptive-barrier activation.
+                self.set_barrier_activation(0.0)
                 return np.zeros(self.cfg.dim)
+
             leader_velocity = self._as_vector(leader_velocity, "leader_velocity")
-            return self.saturate_velocity(leader_velocity)
+            u_i = self.saturate_velocity(leader_velocity)
+
+            # Activation signal for the adaptive barrier dynamics:
+            # mismatch between nominal and saturated command.
+            psi = float(np.linalg.norm(leader_velocity - u_i))
+            self.set_barrier_activation(psi)
+            return u_i
 
         # --------------------------------------------------------
         # Validate inputs
@@ -576,17 +703,29 @@ class SingleIntegratorController(ControllerBase):
 
         # --------------------------------------------------------
         # Compute the total edge-potential gradient
+        # Note: edge_gradients(...) will also update the adaptive
+        # barrier-domain states using the activation stored from the
+        # previous control step.
         # --------------------------------------------------------
         summed_grad, _ = self.compute_outer_descent_direction(
             relative_states=relative_states,
             desired_relative_states=desired_relative_states,
         )
 
+        # --------------------------------------------------------
         # Gradient-descent control law
-        u_i = -self.cfg.c_outer * summed_grad
+        # --------------------------------------------------------
+        u_nom = -self.cfg.c_outer * summed_grad
 
         # Optional saturation
-        u_i = self.saturate_velocity(u_i)
+        u_i = self.saturate_velocity(u_nom)
+
+        # --------------------------------------------------------
+        # Store activation for the NEXT adaptive-barrier update
+        # --------------------------------------------------------
+        psi = float(np.linalg.norm(u_nom - u_i))
+        self.set_barrier_activation(psi)
+
         return u_i
 
 
@@ -851,12 +990,20 @@ class DoubleIntegratorController(ControllerBase):
                 self.filter_virtual_velocity(leader_velocity)
 
             if leader_acceleration is None:
+                # No effective command, so no adaptive-barrier activation.
+                self.set_barrier_activation(0.0)
                 return np.zeros(self.cfg.dim)
 
             leader_acceleration = self._as_vector(
                 leader_acceleration, "leader_acceleration"
             )
-            return self.saturate_acceleration(leader_acceleration)
+            u_i = self.saturate_acceleration(leader_acceleration)
+
+            # Activation signal for the adaptive barrier dynamics:
+            # mismatch between nominal and saturated acceleration command.
+            psi = float(np.linalg.norm(leader_acceleration - u_i))
+            self.set_barrier_activation(psi)
+            return u_i
 
         # --------------------------------------------------------
         # Validate inputs
@@ -875,6 +1022,9 @@ class DoubleIntegratorController(ControllerBase):
 
         # --------------------------------------------------------
         # 1) Outer loop: reduced-system descent direction
+        # Note: edge_gradients(...) will also update the adaptive
+        # barrier-domain states using the activation stored from the
+        # previous control step.
         # --------------------------------------------------------
         summed_grad, _ = self.compute_outer_descent_direction(
             relative_states=relative_states,
@@ -908,10 +1058,17 @@ class DoubleIntegratorController(ControllerBase):
         # The last term is the passivating/coupling term linked to the
         # gradient of V1.
         # --------------------------------------------------------
-        u_i = dv_f - self.cfg.k_vel * e_v - summed_grad
+        u_nom = dv_f - self.cfg.k_vel * e_v - summed_grad
 
         # Optional saturation
-        u_i = self.saturate_acceleration(u_i)
+        u_i = self.saturate_acceleration(u_nom)
+
+        # --------------------------------------------------------
+        # Store activation for the NEXT adaptive-barrier update
+        # --------------------------------------------------------
+        psi = float(np.linalg.norm(u_nom - u_i))
+        self.set_barrier_activation(psi)
+
         return u_i
 
 
@@ -938,6 +1095,10 @@ class BlueROV2Config(BarrierConfig):
 
     # saturation mode for translational virtual velocity / force
     saturation_switch_ratio: float = 4.0
+
+    # attitude stabilisation gains
+    k_att: float = 5.0
+    k_att_d: float = 2.0
 
     def __post_init__(self) -> None:
         super().__post_init__()
@@ -973,6 +1134,10 @@ class BlueROV2Config(BarrierConfig):
             raise ValueError("lgv_epsilon must be positive.")
         if self.saturation_switch_ratio <= 1.0:
             raise ValueError("saturation_switch_ratio should be > 1.0.")
+        if self.k_att < 0.0:
+            raise ValueError("k_att must be nonnegative.")
+        if self.k_att_d < 0.0:
+            raise ValueError("k_att_d must be nonnegative.")
 
 
 class BlueROV2Controller(ControllerBase):
@@ -1247,6 +1412,76 @@ class BlueROV2Controller(ControllerBase):
             h_full[:3], dtype=float
         ).reshape(3)
 
+    def rotational_partition(
+        self,
+        p_i: Array,
+        q_i: Array,
+        nu_i: Array,
+    ) -> Tuple[Array, Array]:
+        """
+        Rotational partition of the equations of motion:
+
+            M_r * dot(omega) + h_r = tau_r
+
+        Returns M_r (3×3) and h_r (3,) from the lower block of the full model.
+        """
+        p_i = np.asarray(p_i, dtype=float).reshape(3)
+        q_i = np.asarray(q_i, dtype=float).reshape(4)
+        nu_i = np.asarray(nu_i, dtype=float).reshape(6)
+        chi_i = np.hstack((p_i, q_i))
+
+        M = np.asarray(self.rov.mass_matrix(chi_i, nu_i), dtype=float)
+        C = np.asarray(self.rov.coriolis(chi_i, nu_i), dtype=float)
+        D = np.asarray(self.rov.damping(chi_i, nu_i), dtype=float)
+        g = np.asarray(self.rov.restoring(chi_i, nu_i), dtype=float)
+
+        h_full = C @ nu_i + D @ nu_i + g
+        M_r = M[3:6, 3:6].copy()
+        h_r = h_full[3:6].copy()
+        return M_r, h_r
+
+    def attitude_torque(
+        self,
+        q_des: Array,
+        q_i: Array,
+        nu_i: Array,
+        p_i: Optional[Array] = None,
+    ) -> Array:
+        """
+        Feedback-linearising attitude stabilisation torque.
+
+        Computes the rotational generalised force that drives the current
+        attitude toward ``q_des`` while damping angular velocity:
+
+            tau_r = M_r @ (-k_att * e_q_s - k_att_d * omega_body) + h_r
+
+        where ``e_q_s = sign(q_err_w) * q_err_xyz`` is the shortest-path
+        quaternion error vector (both quaternions in ``[qx,qy,qz,qw]``
+        scalar-last convention).
+        """
+        q_des = np.asarray(q_des, dtype=float).reshape(4)
+        q_i = np.asarray(q_i, dtype=float).reshape(4)
+        nu_i = np.asarray(nu_i, dtype=float).reshape(6)
+        p_i = np.zeros(3) if p_i is None else np.asarray(p_i, dtype=float).reshape(3)
+        omega_body = nu_i[3:6]
+
+        # --- quaternion error in scalar-last [qx,qy,qz,qw] form ---
+        # q_err = conj(q_des) ⊗ q_i
+        xd, yd, zd, wd = q_des
+        xi, yi, zi, wi = q_i
+        # conjugate of q_des: [-xd, -yd, -zd, wd]
+        ex = wd * xi + (-xd) * wi + (-yd) * zi - (-zd) * yi
+        ey = wd * yi - (-xd) * zi + (-yd) * wi + (-zd) * xi
+        ez = wd * zi + (-xd) * yi - (-yd) * xi + (-zd) * wi
+        ew = wd * wi - (-xd) * xi - (-yd) * yi - (-zd) * zi
+        # shortest-path: flip if scalar part negative
+        sign = 1.0 if ew >= 0.0 else -1.0
+        e_q = sign * np.array([ex, ey, ez])
+
+        M_r, h_r = self.rotational_partition(p_i, q_i, nu_i)
+        tau_r = M_r @ (-self.cfg.k_att * e_q - self.cfg.k_att_d * omega_body) + h_r
+        return tau_r
+
     def actuator_matrix(self) -> Array:
         if hasattr(self.rov, "actuator_matrix"):
             return np.asarray(self.rov.actuator_matrix(), dtype=float)
@@ -1303,8 +1538,11 @@ class BlueROV2Controller(ControllerBase):
 
         M_v, h_v = self.translational_partition(p_i, q_i, nu_i)
 
-        tau_v = M_v @ dv_f_b + h_v - self.cfg.k_v * e_v_b - xi_b
-        tau_v = self.saturate_translational_force(tau_v)
+        tau_v_nom = M_v @ dv_f_b + h_v - self.cfg.k_v * e_v_b - xi_b
+        tau_v = self.saturate_translational_force(tau_v_nom)
+
+        psi = float(np.linalg.norm(tau_v_nom - tau_v))
+        self.set_barrier_activation(psi)
 
         debug = {
             "summed_grad": summed_grad,
@@ -1370,11 +1608,25 @@ class BlueROV2Controller(ControllerBase):
         By default uses the inner-loop kinetic CLF only.
         Optionally adds the position-gradient contribution from V1_i
         in a simple implementation-oriented way.
+
+        Adaptive-barrier note
+        ---------------------
+        The adaptive barrier-domain states are updated indirectly through
+        `compute_edge_gradients_and_virtual_velocity(...)`, because that calls
+        `edge_gradients(...)`. The activation signal used for the NEXT update
+        is stored at the end of this function:
+        - if the QP succeeds, the slack variable is used;
+        - if the QP fails or LgV is too small, the activation is set to zero.
         """
         p_i = np.asarray(p_i, dtype=float).reshape(3)
         q_i = np.asarray(q_i, dtype=float).reshape(4)
         nu_i = np.asarray(nu_i, dtype=float).reshape(6)
 
+        # --------------------------------------------------------
+        # Outer-loop virtual velocity and edge gradients
+        # Note: this also updates the adaptive barrier-domain states
+        # using the activation stored from the previous control step.
+        # --------------------------------------------------------
         summed_grad, edge_grads, v_des_I = (
             self.compute_edge_gradients_and_virtual_velocity(
                 relative_states=relative_states,
@@ -1383,12 +1635,14 @@ class BlueROV2Controller(ControllerBase):
         )
         self.update_virtual_velocity_filter(v_des_I)
 
+        # --------------------------------------------------------
+        # Inner-loop translational CLF quantities
+        # --------------------------------------------------------
         M_v, h_v = self.translational_partition(p_i, q_i, nu_i)
         V, grad_V, e_v_b = self.translational_tracking_clf_terms(p_i, q_i, nu_i)
 
         f_sys = -np.linalg.solve(M_v, h_v)
         LfV = float(grad_V @ f_sys)
-
         LgV = np.linalg.solve(M_v.T, grad_V).reshape(1, 3)
 
         extra_info = {}
@@ -1396,7 +1650,8 @@ class BlueROV2Controller(ControllerBase):
         if include_position_gradient_term:
             if incidence_signs is None:
                 raise ValueError(
-                    "incidence_signs must be provided when include_position_gradient_term=True."
+                    "incidence_signs must be provided when "
+                    "include_position_gradient_term=True."
                 )
             _, grad_V1_pos_I = self.compute_passivating_term_body(
                 q_i=q_i,
@@ -1405,6 +1660,9 @@ class BlueROV2Controller(ControllerBase):
             )
             extra_info["grad_V1_pos_I"] = grad_V1_pos_I
 
+        # --------------------------------------------------------
+        # Fallback if the control direction is too weak
+        # --------------------------------------------------------
         if np.linalg.norm(LgV) < self.cfg.lgv_epsilon:
             tau_v = (
                 np.zeros(3)
@@ -1412,6 +1670,12 @@ class BlueROV2Controller(ControllerBase):
                 else np.asarray(local_fallback, dtype=float).reshape(3)
             )
             tau_v = self.saturate_translational_force(tau_v)
+
+            psi = 0.0
+            self.set_barrier_activation(psi)
+
+            d_min_eff, d_max_eff = self.current_effective_margins()
+
             return tau_v, {
                 "mode": "fallback",
                 "reason": "small_LgV",
@@ -1421,9 +1685,20 @@ class BlueROV2Controller(ControllerBase):
                 "v_des_I": v_des_I,
                 "edge_gradients": edge_grads,
                 "e_v_b": e_v_b,
+                "barrier_activation": psi,
+                "d_min_eff": d_min_eff,
+                "d_max_eff": d_max_eff,
                 **extra_info,
             }
 
+        # --------------------------------------------------------
+        # Build CLF-QP
+        #
+        # minimize    0.5 * tau_v^T W tau_v + 0.5 * p * delta^2
+        # subject to  LfV + LgV tau_v <= -alpha(V) + delta
+        #             tau bounds
+        #             delta >= 0
+        # --------------------------------------------------------
         P = np.diag(
             [
                 self.cfg.clf_force_weight,
@@ -1459,6 +1734,9 @@ class BlueROV2Controller(ControllerBase):
             solver="osqp",
         )
 
+        # --------------------------------------------------------
+        # Fallback if QP solver fails
+        # --------------------------------------------------------
         if sol is None:
             tau_v = (
                 np.zeros(3)
@@ -1466,6 +1744,12 @@ class BlueROV2Controller(ControllerBase):
                 else np.asarray(local_fallback, dtype=float).reshape(3)
             )
             tau_v = self.saturate_translational_force(tau_v)
+
+            psi = 0.0
+            self.set_barrier_activation(psi)
+
+            d_min_eff, d_max_eff = self.current_effective_margins()
+
             return tau_v, {
                 "mode": "fallback",
                 "reason": "qp_failed",
@@ -1475,19 +1759,37 @@ class BlueROV2Controller(ControllerBase):
                 "v_des_I": v_des_I,
                 "edge_gradients": edge_grads,
                 "e_v_b": e_v_b,
+                "barrier_activation": psi,
+                "d_min_eff": d_min_eff,
+                "d_max_eff": d_max_eff,
                 **extra_info,
             }
 
+        # --------------------------------------------------------
+        # Successful QP solve
+        # Use the slack as the activation signal for the adaptive
+        # barrier-domain dynamics at the NEXT control step.
+        # --------------------------------------------------------
         tau_v = sol[:3]
+        delta_slack = float(sol[3])
+
+        psi = max(delta_slack, 0.0)
+        self.set_barrier_activation(psi)
+
+        d_min_eff, d_max_eff = self.current_effective_margins()
+
         return tau_v, {
             "mode": "qp",
-            "delta": sol[3],
+            "delta": delta_slack,
             "V": V,
             "LfV": LfV,
             "LgV": LgV,
             "v_des_I": v_des_I,
             "edge_gradients": edge_grads,
             "e_v_b": e_v_b,
+            "barrier_activation": psi,
+            "d_min_eff": d_min_eff,
+            "d_max_eff": d_max_eff,
             **extra_info,
         }
 

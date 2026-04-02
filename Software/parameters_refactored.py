@@ -67,7 +67,7 @@ class SimulationConfig:
 
     tau_v_max: float | None = 20.0
     clf_alpha: float = 0.1
-    clf_alpha_sat: float = 0.01
+    clf_alpha_sat: float = 0.5
     clf_slack_weight: float = 1000.0
     clf_force_weight: float = 1.0
     thrust_weight: float = 1.0
@@ -76,6 +76,17 @@ class SimulationConfig:
     saturation_switch_ratio: float = 4.0
     thruster_limit: float = 40.0
     k_form: float = 1.0
+    k_att: float = 5.0
+    k_att_d: float = 2.0
+
+    use_adaptive_barrier: bool = False
+    lambda_delta: float = 2.0
+    gamma_delta: float = 1.0
+    sigma_delta_max: float = 0.15
+    lambda_Delta: float = 2.0
+    gamma_Delta: float = 1.0
+    sigma_Delta_max: float = 0.15
+    adaptive_dt: float = 0.01
 
     leader_vel_amp: float = 0.5
     leader_freq: float = 0.5
@@ -132,6 +143,29 @@ class SimulationConfig:
             raise ValueError("thruster_limit must be positive.")
         if self.k_form < 0.0:
             raise ValueError("k_form must be nonnegative.")
+        if self.k_att < 0.0:
+            raise ValueError("k_att must be nonnegative.")
+        if self.k_att_d < 0.0:
+            raise ValueError("k_att_d must be nonnegative.")
+        if self.lambda_delta <= 0.0:
+            raise ValueError("lambda_delta must be positive.")
+        if self.gamma_delta < 0.0:
+            raise ValueError("gamma_delta must be nonnegative.")
+        if self.sigma_delta_max < 0.0:
+            raise ValueError("sigma_delta_max must be nonnegative.")
+        if self.lambda_Delta <= 0.0:
+            raise ValueError("lambda_Delta must be positive.")
+        if self.gamma_Delta < 0.0:
+            raise ValueError("gamma_Delta must be nonnegative.")
+        if self.sigma_Delta_max < 0.0:
+            raise ValueError("sigma_Delta_max must be nonnegative.")
+        if self.adaptive_dt <= 0.0:
+            raise ValueError("adaptive_dt must be positive.")
+        if self.use_adaptive_barrier:
+            if self.sigma_delta_max + self.sigma_Delta_max >= self.d_max - self.d_min:
+                raise ValueError(
+                    "sigma_delta_max + sigma_Delta_max must be strictly smaller than d_max - d_min."
+                )
         if self.leader_accel_steps < 0:
             raise ValueError("leader_accel_steps must be nonnegative.")
         if self.leader_brake_steps < 0:
@@ -458,7 +492,14 @@ class Parameters:
             unknown_list = ", ".join(sorted(unknown))
             raise TypeError(f"Unknown SimulationConfig fields: {unknown_list}")
 
-        bool_keys = {"conn", "coll", "fov", "rec", "use_quaternions"}
+        bool_keys = {
+            "conn",
+            "coll",
+            "fov",
+            "rec",
+            "use_quaternions",
+            "use_adaptive_barrier",
+        }
         normalized = dict(overrides)
         for key in bool_keys:
             if key in normalized:
@@ -742,6 +783,66 @@ class Parameters:
             type=float,
             default=SimulationConfig.k_form,
             help="Formation gain",
+        )
+        parser.add_argument(
+            "--k_att",
+            type=float,
+            default=SimulationConfig.k_att,
+            help="Attitude proportional gain",
+        )
+        parser.add_argument(
+            "--k_att_d",
+            type=float,
+            default=SimulationConfig.k_att_d,
+            help="Attitude derivative (damping) gain",
+        )
+        parser.add_argument(
+            "--use_adaptive_barrier",
+            type=int,
+            default=int(SimulationConfig.use_adaptive_barrier),
+            help="Enable adaptive barrier-domain relaxation (0/1)",
+        )
+        parser.add_argument(
+            "--lambda_delta",
+            type=float,
+            default=SimulationConfig.lambda_delta,
+            help="Adaptive decay rate for lower margin",
+        )
+        parser.add_argument(
+            "--gamma_delta",
+            type=float,
+            default=SimulationConfig.gamma_delta,
+            help="Adaptive activation gain for lower margin",
+        )
+        parser.add_argument(
+            "--sigma_delta_max",
+            type=float,
+            default=SimulationConfig.sigma_delta_max,
+            help="Maximum relaxation for lower margin",
+        )
+        parser.add_argument(
+            "--lambda_Delta",
+            type=float,
+            default=SimulationConfig.lambda_Delta,
+            help="Adaptive decay rate for upper margin",
+        )
+        parser.add_argument(
+            "--gamma_Delta",
+            type=float,
+            default=SimulationConfig.gamma_Delta,
+            help="Adaptive activation gain for upper margin",
+        )
+        parser.add_argument(
+            "--sigma_Delta_max",
+            type=float,
+            default=SimulationConfig.sigma_Delta_max,
+            help="Maximum relaxation for upper margin",
+        )
+        parser.add_argument(
+            "--adaptive_dt",
+            type=float,
+            default=SimulationConfig.adaptive_dt,
+            help="Integration step for adaptive barrier dynamics",
         )
         parser.add_argument(
             "--leader_vel_amp",

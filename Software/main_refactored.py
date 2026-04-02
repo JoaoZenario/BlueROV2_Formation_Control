@@ -80,6 +80,14 @@ class FormationControlSimulation:
             use_connectivity=bool(self.cfg.conn),
             use_collision=bool(self.cfg.coll),
             use_recentered=bool(self.cfg.rec),
+            use_adaptive_barrier=bool(self.cfg.use_adaptive_barrier),
+            lambda_delta=self.cfg.lambda_delta,
+            gamma_delta=self.cfg.gamma_delta,
+            sigma_delta_max=self.cfg.sigma_delta_max,
+            lambda_Delta=self.cfg.lambda_Delta,
+            gamma_Delta=self.cfg.gamma_Delta,
+            sigma_Delta_max=self.cfg.sigma_Delta_max,
+            adaptive_dt=self.cfg.adaptive_dt,
             c_outer=self.cfg.c1,
             v_max=self.cfg.v_max,
         )
@@ -93,6 +101,14 @@ class FormationControlSimulation:
             use_connectivity=bool(self.cfg.conn),
             use_collision=bool(self.cfg.coll),
             use_recentered=bool(self.cfg.rec),
+            use_adaptive_barrier=bool(self.cfg.use_adaptive_barrier),
+            lambda_delta=self.cfg.lambda_delta,
+            gamma_delta=self.cfg.gamma_delta,
+            sigma_delta_max=self.cfg.sigma_delta_max,
+            lambda_Delta=self.cfg.lambda_Delta,
+            gamma_Delta=self.cfg.gamma_Delta,
+            sigma_Delta_max=self.cfg.sigma_Delta_max,
+            adaptive_dt=self.cfg.adaptive_dt,
             c_outer=self.cfg.c1,
             k_vel=self.cfg.c2,
             v_max=self.cfg.v_max,
@@ -113,6 +129,14 @@ class FormationControlSimulation:
             use_connectivity=bool(self.cfg.conn),
             use_collision=bool(self.cfg.coll),
             use_recentered=bool(self.cfg.rec),
+            use_adaptive_barrier=bool(self.cfg.use_adaptive_barrier),
+            lambda_delta=self.cfg.lambda_delta,
+            gamma_delta=self.cfg.gamma_delta,
+            sigma_delta_max=self.cfg.sigma_delta_max,
+            lambda_Delta=self.cfg.lambda_Delta,
+            gamma_Delta=self.cfg.gamma_Delta,
+            sigma_Delta_max=self.cfg.sigma_Delta_max,
+            adaptive_dt=self.cfg.adaptive_dt,
             c_outer=self.cfg.c1,
             k_v=self.cfg.c2,
             filter_type=self.cfg.filter_type,
@@ -123,11 +147,14 @@ class FormationControlSimulation:
             v_max=self.cfg.v_max,
             tau_v_max=self.cfg.tau_v_max,
             clf_alpha=self.cfg.clf_alpha,
+            clf_alpha_sat=self.cfg.clf_alpha_sat,
             clf_slack_weight=self.cfg.clf_slack_weight,
             clf_force_weight=self.cfg.clf_force_weight,
             thrust_weight=self.cfg.thrust_weight,
             lgv_epsilon=self.cfg.lgv_epsilon,
             saturation_switch_ratio=self.cfg.saturation_switch_ratio,
+            k_att=self.cfg.k_att,
+            k_att_d=self.cfg.k_att_d,
         )
 
     # ============================================================
@@ -205,8 +232,11 @@ class FormationControlSimulation:
             self.q = np.array(
                 [self._get_quaternion(sim.state) for sim in self.simulators]
             )
+            # Store initial pose as the attitude setpoint for each agent
+            self.q_des = self.q.copy()
         else:
             self.q = None
+            self.q_des = None
 
         self.data.history = self.x[np.newaxis, :, :]
         self.data.vel_history = [[np.linalg.norm(vi) for vi in self.v]]
@@ -357,6 +387,17 @@ class FormationControlSimulation:
             v_lead, _ = self._leader_command(step)
             ctrl.update_virtual_velocity_filter(v_lead)
 
+        # Attitude stabilisation torque (tracks the initial pose)
+        if self.q_des is not None:
+            tau_omega = ctrl.attitude_torque(
+                q_des=self.q_des[i],
+                q_i=q_i,
+                nu_i=nu_i,
+                p_i=p_i,
+            )
+        else:
+            tau_omega = np.zeros(3)
+
         if self.mode == "bluerov_feedback_linearization":
             tau_i, debug = ctrl.do_control(
                 p_i=p_i,
@@ -366,6 +407,7 @@ class FormationControlSimulation:
                 desired_relative_states=desired_rel,
                 incidence_signs=incidence_signs,
                 mode="feedback_linearization",
+                tau_omega=tau_omega,
             )
             return tau_i, debug
 
@@ -378,6 +420,7 @@ class FormationControlSimulation:
                 desired_relative_states=desired_rel,
                 incidence_signs=incidence_signs,
                 mode="clf_qp_tau",
+                tau_omega=tau_omega,
                 local_fallback_tau_v=np.zeros(3),
             )
             return tau_i, debug
@@ -396,6 +439,7 @@ class FormationControlSimulation:
                 desired_relative_states=desired_rel,
                 incidence_signs=incidence_signs,
                 mode="clf_qp_thrusters",
+                tau_omega=tau_omega,
                 f_min=f_min,
                 f_max=f_max,
             )
@@ -513,6 +557,7 @@ class FormationControlSimulation:
         self.data.accel_history = np.array(self.data.accel_history)
         self.data.err_history = np.array(self.data.err_history)
         self.data.tau_history = np.array(self.data.tau_history)
+        self.data.debug_history = self.debug_history
 
         if self.cfg.fov:
             self.data.fov_history = np.array(self.data.fov_history)
