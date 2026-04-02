@@ -7,6 +7,89 @@ import networkx as nx
 import matplotlib.pyplot as plt
 
 
+def compute_directed_edge_list(A: np.ndarray) -> tuple[np.ndarray, int]:
+    """
+    Edge list for a directed graph adjacency matrix.
+
+    Returns an array E where each row is (i, j) such that A[i, j] == 1,
+    and NE = number of directed edges.
+    """
+    A = np.asarray(A)
+    edges = []
+    N = A.shape[0]
+    for i in range(N):
+        for j in range(N):
+            if A[i, j] == 1:
+                edges.append((i, j))
+
+    E = np.array(edges, dtype=np.int64) if edges else np.empty((0, 2), dtype=np.int64)
+    return E, len(edges)
+
+
+def is_rooted_directed_tree(A: np.ndarray, root: int = 0) -> bool:
+    """
+    Check whether adjacency A defines a rooted directed spanning tree
+    under convention A[i, j] = 1 meaning i has parent j.
+    """
+    A = np.asarray(A)
+    N = A.shape[0]
+
+    if np.sum(A[root]) != 0:
+        return False
+
+    for i in range(N):
+        if i == root:
+            continue
+        if np.sum(A[i]) != 1:
+            return False
+
+    for i in range(N):
+        visited = set()
+        current = i
+        while current != root:
+            parents = np.where(A[current] == 1)[0]
+            if len(parents) != 1:
+                return False
+            parent = int(parents[0])
+            if parent in visited:
+                return False
+            visited.add(parent)
+            current = parent
+
+    return True
+
+
+def build_directed_tree_adjacency(
+    N: int,
+    tree_type: str = "leader_star",
+    random_seed: int | None = None,
+) -> np.ndarray:
+    """
+    Build a rooted directed tree adjacency matrix under convention
+    A[i, j] = 1 means i uses information from parent j.
+    """
+    A = np.zeros((N, N), dtype=int)
+
+    if N <= 1:
+        return A
+
+    if tree_type == "leader_star":
+        for i in range(1, N):
+            A[i, 0] = 1
+    elif tree_type == "leader_chain":
+        for i in range(1, N):
+            A[i, i - 1] = 1
+    elif tree_type == "random_tree":
+        rng = np.random.default_rng(random_seed)
+        for i in range(1, N):
+            parent = int(rng.integers(0, i))
+            A[i, parent] = 1
+    else:
+        raise ValueError(f"Unknown tree_type '{tree_type}'")
+
+    return A
+
+
 def get_neighbor_lists_from_adjacency(A: np.ndarray) -> Dict[int, List[int]]:
     """
     Converts an adjacency matrix A (0-based indices) into a dictionary
@@ -112,109 +195,98 @@ def is_connected_scipy(A: np.ndarray) -> bool:
 
 
 def generate_random_connected_graph(
-    N: int, d: int, d_max: float, d_min: float, l: float, mode: bool, fov: bool
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray, int]:
+    N: int,
+    d: int,
+    d_max: float,
+    d_min: float,
+    l: float,
+    random_seed: int | None = None,
+    max_tries: int = 500,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, int, np.ndarray]:
     """
-    Generates a random proximity graph embedded in (R^d)^N.
+    Generate a random graph embedded in [0,l]^d.
 
-    Args:
-        N (int): Number of vertices/agents.
-        d (int): Dimension of the state (e.g., 2 for a 2D plane).
-        d_max (float): Maximum distance for two nodes to be neighbors (radius).
-        d_min (float): Minimum distance for two nodes to be neighbors.
-        l (float): Length of the side of the square/hypercube [0, l]^d.
-        mode (bool): Mode to specifiy which graph is desired, directed (1) or undirected (0).
-        fov (bool): Field of View constraint (Off(0); On (1)).
+    Parameters
+    ----------
+    N : int
+        Number of agents.
+    d : int
+        State dimension (2 or 3).
+    d_max : float
+        Connectivity radius.
+    d_min : float
+        Collision-avoidance threshold.
+    l : float
+        Workspace side length.
+    mode : bool
+        Graph mode:
+            False -> undirected
+            True  -> directed
+    fov : bool
+        If True and mode is directed, each follower is forced to keep at most one parent.
+    random_seed : int | None
+        Random seed.
+    max_tries : int
+        Maximum number of rejection-sampling attempts.
 
-    Returns:
-        Tuple[np.ndarray, np.ndarray, np.ndarray, int]:
-        - P (np.ndarray): NxD matrix of positions.
-        - A (np.ndarray): NxN adjacency matrix (0-1).
-        - E (np.ndarray): Edge set, matrix of size NE x 2 (0-based indices).
-        - NE (int): Number of edges.
+    Returns
+    -------
+    Tuple[np.ndarray, np.ndarray, np.ndarray, int, np.ndarray]
+        P   : positions, shape (N,d)
+        A   : adjacency matrix, shape (N,N)
+        E   : edge list, shape (NE,2)
+        NE  : number of edges
+        dist: pairwise distance matrix, shape (N,N)
     """
+    if N < 1:
+        raise ValueError("N must be positive.")
+    if d not in (2, 3):
+        raise ValueError("d must be 2 or 3.")
     if d_min >= d_max:
         raise ValueError("d_min must be strictly less than d_max.")
+    if l <= 0:
+        raise ValueError("l must be positive.")
+    if max_tries < 1:
+        raise ValueError("max_tries must be at least 1.")
 
-    connected = False
+    rng = np.random.default_rng(random_seed)
 
-    # Pre-allocate II for vectorization
     II = np.ones((N, 1))
 
-    while not connected:
-        # 1. Generate random positions on the hypercube [0, l]^d
-        # P is NxD
-        P = l * np.random.rand(N, d)
+    for _ in range(max_tries):
+        # 1) Random positions
+        P = l * rng.random((N, d))
 
-        # 2. Compute squared distances between all nodes
-        D2 = np.zeros((N, N))
-
-        # Vectorized distance computation
+        # 2) Pairwise squared distances
+        D2 = np.zeros((N, N), dtype=float)
         for dd in range(d):
-            # Extract the dd-th column/dimension
-            X_dd = P[:, dd].reshape(-1, 1)  # Column vector (N x 1)
-
-            # This computes (X_i - X_j)^T
-            # The operation is (P_i - P_j) for the dd-th component
+            X_dd = P[:, dd].reshape(-1, 1)
             X = X_dd @ II.T - II @ X_dd.T
             D2 += X**2
 
-        # 3. Compute distances and Adjacency Matrix
         dist = np.sqrt(D2)
 
-        # Two nodes are neighbors if d_min <= dist <= d_max
-        A = (dist <= d_max) & (dist >= d_min)
-        A = A.astype(int)  # Convert boolean to integer (0 or 1)
+        # 3) Base proximity graph: neighbors if d_min <= dist <= d_max
+        base = ((dist <= d_max) & (dist >= d_min)).astype(int)
+        np.fill_diagonal(base, 0)
 
-        # In order to transform in a directed system (strictily lower triangular matrix).
-        # This guarantees that a spanning tree exists and therefore that the system is stable.
-        A = np.tril(A, k=-1)
+        # =====================================================
+        # Undirected case
+        # =====================================================
+        A = np.maximum(base, base.T)
+        np.fill_diagonal(A, 0)
 
-        for i in range(1, N):
-            # Check how many agents agent i is following.
-            connected_parents = np.where(A[i, :] == 1)[0]
+        if is_connected_scipy(A):
+            E = adj_to_und_edges(A)
+            NE = E.shape[0]
 
-            # Field of View constraint is applied.
-            if fov:
-                # Agent i is connected to more that one agent.
-                if len(connected_parents) > 1:
-                    # An agent must be connected to only one other agent because it might not be able to "look" at two or more agents simultaneously.
-                    # Keep the lowest ID.
-                    best_parent = np.min(connected_parents)
-                    A[i, :] = 0  # Clear all connections for this row.
-                    A[i, best_parent] = 1  # Keep only one.
+            consensus = check_consensus_capability(A)
+            if consensus:
+                print("Condition Met: Undirected connected graph generated.")
+            else:
+                print("Condition Failed.")
 
-            # Digraph case.
-            if mode:
-                # Safety Check: If an agent follows no one, it's lost. It must follow someone to stay in formation.
-                if len(connected_parents) == 0:
-                    # Connect to a random agent with a lower index.
-                    random_parent = np.random.randint(0, i)
-                    A[i, random_parent] = 1
-
-        # 4. Check Connectivity
-        # MATLAB: connected = all( all( A^N ) ) is an algebraic check for connectivity
-        # which can be slow and less reliable than graph-based methods.
-        # Python uses a robust graph-based check (Breadth-First Search / Union-Find).
-        connected = is_connected_scipy(A)
-
-    # 5. Final Processing
-    # Remove self-loops (already handled by dist check, but good practice)
-    np.fill_diagonal(A, 0)
-
-    # Get edge set E and number of edges NE
-    E = adj_to_und_edges(A)
-    NE = E.shape[0]
-
-    consensus = check_consensus_capability(A)
-
-    if consensus:
-        print("Condition Met: Spanning tree exists and system is stable.")
-    else:
-        print("Condition Failed.")
-
-    # Return P, A, E (0-based indexing), NE
-    return P, A, E, NE, dist
+            return P, A, E, NE, dist
 
 
 def plot_graph_from_adjacency(

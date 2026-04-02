@@ -5,6 +5,7 @@ from __future__ import annotations
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation, PillowWriter
+from matplotlib.gridspec import GridSpecFromSubplotSpec
 
 from graphs_utils import plot_graph_from_adjacency
 
@@ -12,14 +13,17 @@ from graphs_utils import plot_graph_from_adjacency
 class Animation:
     def __init__(self, params):
         self.params = params
-        self.N = params.N
-        self.dim = params.dim
-        self.is_3d = params.dim == 3
+        self.cfg = params.config
+        self.scenario = params.scenario
+        self.data = params.data
+        self.N = self.cfg.N
+        self.dim = self.cfg.dim
+        self.is_3d = self.cfg.dim == 3
 
         self.colors = [
             "#{:02X}{:02X}{:02X}".format(int(r * 255), int(g * 255), int(b * 255))
             for r, g, b, _ in plt.cm.hsv(
-                [i / max(params.N, 1) for i in range(params.N)]
+                [i / max(self.cfg.N, 1) for i in range(self.cfg.N)]
             )
         ]
 
@@ -37,9 +41,7 @@ class Animation:
         else:
             self.ax = self.fig_space.add_subplot(111)
 
-        self.ax.set_title(
-            f"Formation Workspace - {getattr(self.params, 'simulation_mode', 'simulation')}"
-        )
+        self.ax.set_title(f"Formation Workspace - {self.cfg.simulation_mode}")
         self.ax.set_xlabel("X (m)")
         self.ax.set_ylabel("Y (m)")
         if self.is_3d:
@@ -77,7 +79,7 @@ class Animation:
         self.edge_pairs = []
         for i in range(self.N):
             for j in range(self.N):
-                if self.params.A[i, j] == 1:
+                if self.scenario.A[i, j] == 1:
                     if self.is_3d:
                         line = self.ax.plot(
                             [], [], [], color="green", linestyle="--", lw=1.5, alpha=0.8
@@ -102,18 +104,21 @@ class Animation:
         self.ax.legend(loc="upper right", fontsize="x-small")
 
     def _build_telemetry_figure(self):
-        fov_hist = getattr(self.params, "fov_history", None)
+        fov_hist = self.data.fov_history
         has_fov = (
-            bool(getattr(self.params, "fov", False))
+            bool(self.cfg.fov)
             and fov_hist is not None
             and np.ndim(fov_hist) == 3
             and fov_hist.shape[-1] >= 2
         )
         self.has_fov = has_fov
 
-        self.fig_telemetry = plt.figure("System Telemetry", figsize=(13, 9))
-        rows = 3 if has_fov else 2
-        gs = self.fig_telemetry.add_gridspec(rows, 2, hspace=0.35, wspace=0.3)
+        content_rows = 3 if has_fov else 2
+        total_rows = content_rows + 1
+        self.fig_telemetry = plt.figure(
+            "System Telemetry", figsize=(13, 4 * total_rows)
+        )
+        gs = self.fig_telemetry.add_gridspec(total_rows, 2, hspace=0.4, wspace=0.3)
 
         self.ax_dist = self.fig_telemetry.add_subplot(gs[0, 0])
         self.ax_err = self.fig_telemetry.add_subplot(gs[0, 1])
@@ -133,20 +138,20 @@ class Animation:
         self.ax_vel.set_ylabel("Speed")
         self.ax_acc.set_ylabel("Acceleration")
 
-        if self.params.conn:
+        if self.cfg.conn:
             self.ax_dist.axhline(
-                self.params.d_max, color="r", ls="--", alpha=0.8, label="d_max"
+                self.cfg.d_max, color="r", ls="--", alpha=0.8, label="d_max"
             )
-        if self.params.coll:
+        if self.cfg.coll:
             self.ax_dist.axhline(
-                self.params.d_min, color="darkred", ls="--", alpha=0.8, label="d_min"
+                self.cfg.d_min, color="darkred", ls="--", alpha=0.8, label="d_min"
             )
 
         self.ax_vel.axhline(
-            self.params.v_max, color="k", ls="--", alpha=0.5, label="v_max"
+            self.cfg.v_max, color="k", ls="--", alpha=0.5, label="v_max"
         )
         self.ax_acc.axhline(
-            self.params.a_max, color="k", ls="--", alpha=0.5, label="a_max"
+            self.cfg.a_max, color="k", ls="--", alpha=0.5, label="a_max"
         )
 
         self.dist_lines = []
@@ -184,16 +189,16 @@ class Animation:
             self.ax_fov_y.set_xlabel("Time (s)")
 
             self.ax_fov_x.axhline(
-                np.degrees(self.params.theta_max_x), color="r", ls="--", alpha=0.7
+                np.degrees(self.cfg.theta_max_x), color="r", ls="--", alpha=0.7
             )
             self.ax_fov_x.axhline(
-                -np.degrees(self.params.theta_max_x), color="r", ls="--", alpha=0.7
+                -np.degrees(self.cfg.theta_max_x), color="r", ls="--", alpha=0.7
             )
             self.ax_fov_y.axhline(
-                np.degrees(self.params.theta_max_y), color="r", ls="--", alpha=0.7
+                np.degrees(self.cfg.theta_max_y), color="r", ls="--", alpha=0.7
             )
             self.ax_fov_y.axhline(
-                -np.degrees(self.params.theta_max_y), color="r", ls="--", alpha=0.7
+                -np.degrees(self.cfg.theta_max_y), color="r", ls="--", alpha=0.7
             )
 
             self.fov_x_lines = []
@@ -209,6 +214,110 @@ class Animation:
                         [], [], color=self.colors[i], label=f"Agent {i}"
                     )[0]
                 )
+
+        # ---- applied force / command panels (component-wise, bottom row) ----
+        force_row = content_rows
+        mode = self.cfg.simulation_mode
+
+        if mode == "bluerov_clf_qp_thrusters":
+            # One panel: all per-thruster forces (8) per agent
+            n_force_panels = 1
+            force_comp_slices = None  # signal: thruster mode
+            force_limit = self.cfg.thruster_limit
+            force_limit_label = "±thruster_limit"
+            comp_labels = [f"f{k+1}" for k in range(8)]
+            panel_titles = ["Per-Thruster Forces (N)"]
+            force_ylabel = "Force (N)"
+        else:
+            # Three panels: x, y, z components of the first 3 control outputs
+            n_force_panels = 3
+            force_comp_slices = [0, 1, 2]
+            if mode == "single_integrator":
+                lbl = "Vel cmd"
+                force_ylabel = "m/s"
+                force_limit = self.cfg.v_max
+                force_limit_label = "v_max (norm)"
+            elif mode == "double_integrator":
+                lbl = "Accel cmd"
+                force_ylabel = "m/s²"
+                force_limit = self.cfg.a_max
+                force_limit_label = "a_max (norm)"
+            elif mode == "bluerov_clf_qp_tau":
+                lbl = "τ_v"
+                force_ylabel = "Force (N)"
+                force_limit = self.cfg.tau_v_max
+                force_limit_label = "±tau_v_max"
+            else:
+                lbl = "τ"
+                force_ylabel = "Force (N)"
+                force_limit = None
+                force_limit_label = None
+            comp_labels = ["x", "y", "z"]
+            panel_titles = [f"{lbl}_{c}" for c in comp_labels]
+
+        self._force_limit = force_limit
+        self._force_comp_slices = force_comp_slices
+
+        force_gs = GridSpecFromSubplotSpec(
+            1,
+            n_force_panels,
+            subplot_spec=gs[force_row, :],
+            wspace=0.3,
+        )
+        self.ax_force_panels = [
+            self.fig_telemetry.add_subplot(force_gs[0, k])
+            for k in range(n_force_panels)
+        ]
+        for k, ax in enumerate(self.ax_force_panels):
+            ax.set_title(panel_titles[k])
+            ax.set_xlabel("Time (s)")
+            ax.set_ylabel(force_ylabel)
+            if force_limit is not None:
+                ax.axhline(
+                    force_limit,
+                    color="r",
+                    ls="--",
+                    alpha=0.8,
+                    label=force_limit_label if k == 0 else None,
+                )
+                ax.axhline(-force_limit, color="r", ls="--", alpha=0.8)
+
+        # Create force_lines: flat list indexed [panel_idx * N + agent]
+        # or for thrusters [thruster * N + agent]
+        self.force_lines = []
+        linestyles = ["-", "--", "-.", ":", (0, (3, 1, 1, 1))]
+        if force_comp_slices is None:
+            # Thruster mode: all 8 thruster forces on the single panel
+            for k in range(8):
+                for i in range(self.N):
+                    ls = linestyles[i % len(linestyles)]
+                    self.force_lines.append(
+                        self.ax_force_panels[0].plot(
+                            [],
+                            [],
+                            ls=ls,
+                            color=self.colors[i],
+                            lw=1.0,
+                            alpha=0.8,
+                            label=f"A{i} {comp_labels[k]}" if i == 0 else None,
+                        )[0]
+                    )
+        else:
+            # 3-component mode: one line per agent per panel
+            for k in range(3):
+                for i in range(self.N):
+                    self.force_lines.append(
+                        self.ax_force_panels[k].plot(
+                            [],
+                            [],
+                            color=self.colors[i],
+                            lw=1.2,
+                            label=f"Agent {i}",
+                        )[0]
+                    )
+
+        for k, ax in enumerate(self.ax_force_panels):
+            ax.legend(loc="upper right", fontsize="xx-small", ncol=2)
 
         self.ax_dist.legend(loc="upper right", fontsize="xx-small", ncol=2)
         self.ax_vel.legend(loc="upper right", fontsize="xx-small", ncol=2)
@@ -230,21 +339,17 @@ class Animation:
         line.set_data(x[:n], y[:n])
 
     def _get_frame_state(self, frame):
-        x = self.params.history[frame]
+        x = self.data.history[frame]
         v = (
-            self.params.v_history_full[frame]
-            if len(self.params.v_history_full) > frame
+            self.data.v_history_full[frame]
+            if len(self.data.v_history_full) > frame
             else None
         )
-        q = (
-            self.params.q_history[frame]
-            if hasattr(self.params, "q_history") and len(self.params.q_history) > frame
-            else None
-        )
+        q = self.data.q_history[frame] if len(self.data.q_history) > frame else None
         return x, v, q
 
     def _workspace_limits(self, frame):
-        hist = self.params.history[: frame + 1]
+        hist = self.data.history[: frame + 1]
         pts = hist.reshape(-1, self.dim)
         mins = np.min(pts, axis=0)
         maxs = np.max(pts, axis=0)
@@ -258,18 +363,30 @@ class Animation:
     def _barrier_scalar(self, r):
         r = np.asarray(r, dtype=float)
         r2 = r**2
-        eps = 1e-9
+        eps = self.cfg.lgv_epsilon
         out = np.zeros_like(r, dtype=float)
 
-        if self.params.conn:
-            out += np.log(
-                self.params.d_max**2 / np.maximum(self.params.d_max**2 - r2, eps)
-            )
-        if self.params.coll:
-            out += np.log(
-                self.params.d_min**2 / np.maximum(r2 - self.params.d_min**2, eps)
-            )
+        if self.cfg.conn:
+            out += np.log(self.cfg.d_max**2 / np.maximum(self.cfg.d_max**2 - r2, eps))
+        if self.cfg.coll:
+            out += np.log(self.cfg.d_min**2 / np.maximum(r2 - self.cfg.d_min**2, eps))
         return out
+
+    def _connectivity_barrier_scalar(self, r):
+        r = np.asarray(r, dtype=float)
+        r2 = r**2
+        eps = self.cfg.lgv_epsilon
+        if not self.cfg.conn:
+            return np.zeros_like(r, dtype=float)
+        return np.log(self.cfg.d_max**2 / np.maximum(self.cfg.d_max**2 - r2, eps))
+
+    def _collision_barrier_scalar(self, r):
+        r = np.asarray(r, dtype=float)
+        r2 = r**2
+        eps = self.cfg.lgv_epsilon
+        if not self.cfg.coll:
+            return np.zeros_like(r, dtype=float)
+        return np.log(self.cfg.d_min**2 / np.maximum(r2 - self.cfg.d_min**2, eps))
 
     def _barrier_vector(self, d):
         """
@@ -285,16 +402,41 @@ class Animation:
         """
         d = np.asarray(d, dtype=float)
         r2 = np.sum(d * d, axis=-1, keepdims=True)
-        eps = 1e-9
+        eps = self.cfg.lgv_epsilon
 
         grad = np.zeros_like(d)
 
-        if self.params.conn:
-            grad += (2.0 / np.maximum(self.params.d_max**2 - r2, eps)) * d
-        if self.params.coll:
-            grad += -(2.0 / np.maximum(r2 - self.params.d_min**2, eps)) * d
+        if self.cfg.conn:
+            grad += (2.0 / np.maximum(self.cfg.d_max**2 - r2, eps)) * d
+        if self.cfg.coll:
+            grad += -(2.0 / np.maximum(r2 - self.cfg.d_min**2, eps)) * d
 
         return grad
+
+    def _barrier_edge_reference_2d(self):
+        """
+        Pick a desired relative vector from an actual graph edge for plotting.
+
+        Returns
+        -------
+        (i, j), d_des_2d
+            Directed edge (i, j) and desired relative vector projected to XY.
+        """
+        if len(self.edge_pairs) == 0:
+            return None, np.array([self.cfg.R, 0.0], dtype=float)
+
+        i, j = self.edge_pairs[0]
+        d_des = np.asarray(self.scenario.relative_pos_desired[i, j], dtype=float)
+
+        if d_des.size >= 2:
+            d_des_2d = d_des[:2]
+        else:
+            d_des_2d = np.array([self.cfg.R, 0.0], dtype=float)
+
+        if np.linalg.norm(d_des_2d) < 1e-12:
+            d_des_2d = np.array([self.cfg.R, 0.0], dtype=float)
+
+        return (i, j), d_des_2d
 
     # ============================================================
     # update plots
@@ -302,7 +444,7 @@ class Animation:
 
     def plot_handle(self, frame, u_history):
         x, v, q = self._get_frame_state(frame)
-        t = np.arange(frame + 1) * self.params.dt
+        t = np.arange(frame + 1) * self.cfg.dt
 
         # Workspace agents and trails
         for i in range(self.N):
@@ -312,11 +454,11 @@ class Animation:
 
             self._safe_set_data(
                 self.trails[i],
-                self.params.history[: frame + 1, i, 0],
-                self.params.history[: frame + 1, i, 1],
+                self.data.history[: frame + 1, i, 0],
+                self.data.history[: frame + 1, i, 1],
             )
             if self.is_3d:
-                self.trails[i].set_3d_properties(self.params.history[: frame + 1, i, 2])
+                self.trails[i].set_3d_properties(self.data.history[: frame + 1, i, 2])
 
         # Workspace edges + telemetry distances
         cmap = plt.get_cmap("RdYlGn_r")
@@ -324,8 +466,8 @@ class Animation:
 
         for idx, (i, j) in enumerate(self.edge_pairs):
             rel_hist = (
-                self.params.history[: frame + 1, i, :]
-                - self.params.history[: frame + 1, j, :]
+                self.data.history[: frame + 1, i, :]
+                - self.data.history[: frame + 1, j, :]
             )
             dist_hist = np.linalg.norm(rel_hist, axis=1)
             self._safe_set_data(self.dist_lines[idx], t, dist_hist)
@@ -338,14 +480,12 @@ class Animation:
             d = dist_hist[-1] if dist_hist.size else 0.0
             current_max_dist = max(current_max_dist, d)
 
-            target = getattr(
-                self.params, "R", 0.5 * (self.params.d_min + self.params.d_max)
-            )
+            target = getattr(self.cfg, "R", 0.5 * (self.cfg.d_min + self.cfg.d_max))
             if d > target:
-                denom = max(self.params.d_max - target, 1e-9)
+                denom = max(self.cfg.d_max - target, 1e-9)
                 cval = (d - target) / denom
             else:
-                denom = max(target - self.params.d_min, 1e-9)
+                denom = max(target - self.cfg.d_min, 1e-9)
                 cval = (target - d) / denom
 
             self.edge_lines[idx].set_color(cmap(np.clip(cval, 0.0, 1.0)))
@@ -353,75 +493,118 @@ class Animation:
         # Telemetry per agent
         for i in range(self.N):
             self._safe_set_data(
-                self.err_lines[i], t, self.params.err_history[: frame + 1, i]
+                self.err_lines[i], t, self.data.err_history[: frame + 1, i]
             )
             self._safe_set_data(
-                self.vel_lines[i], t, self.params.vel_history[: frame + 1, i]
+                self.vel_lines[i], t, self.data.vel_history[: frame + 1, i]
             )
             self._safe_set_data(
-                self.acc_lines[i], t, self.params.accel_history[: frame + 1, i]
+                self.acc_lines[i], t, self.data.accel_history[: frame + 1, i]
             )
+
+        # Applied force / command components
+        if u_history is not None and len(u_history) > 0:
+            u_hist = np.asarray(u_history[: frame + 1], dtype=float)
+            # u_hist shape: (frame+1, N, input_dim)
+            if self._force_comp_slices is None:
+                # Thruster mode: 8×N lines on panel 0
+                for k in range(8):
+                    for i in range(self.N):
+                        line = self.force_lines[k * self.N + i]
+                        if u_hist.shape[-1] > k:
+                            self._safe_set_data(line, t, u_hist[:, i, k])
+            else:
+                # 3-component mode: panel k shows component k for all agents
+                for k in range(3):
+                    for i in range(self.N):
+                        line = self.force_lines[k * self.N + i]
+                        if u_hist.shape[-1] > k:
+                            self._safe_set_data(line, t, u_hist[:, i, k])
 
         # Mean formation error in meters
         if self.N > 1:
-            mean_err = np.mean(self.params.err_history[: frame + 1, 1:], axis=1)
+            mean_err = np.mean(self.data.err_history[: frame + 1, 1:], axis=1)
         else:
-            mean_err = self.params.err_history[: frame + 1, 0]
+            mean_err = self.data.err_history[: frame + 1, 0]
         self._safe_set_data(self.err_mean_line, t, mean_err)
 
         # FOV telemetry
         if self.has_fov:
             for i in range(self.N):
                 self._safe_set_data(
-                    self.fov_x_lines[i], t, self.params.fov_history[: frame + 1, i, 0]
+                    self.fov_x_lines[i], t, self.data.fov_history[: frame + 1, i, 0]
                 )
                 self._safe_set_data(
-                    self.fov_y_lines[i], t, self.params.fov_history[: frame + 1, i, 1]
+                    self.fov_y_lines[i], t, self.data.fov_history[: frame + 1, i, 1]
                 )
 
         # Axes limits
-        T = self.params.steps * self.params.dt
+        T = self.cfg.steps * self.cfg.dt
         self.ax_dist.set_xlim(0, T)
         self.ax_vel.set_xlim(0, T)
         self.ax_acc.set_xlim(0, T)
         self.ax_err.set_xlim(0, T)
+        for ax in self.ax_force_panels:
+            ax.set_xlim(0, T)
 
         if frame >= 0:
-            self.ax_dist.set_ylim(
-                0, max(self.params.d_max * 1.1, current_max_dist * 1.1)
-            )
+            self.ax_dist.set_ylim(0, max(self.cfg.d_max * 1.1, current_max_dist * 1.1))
             self.ax_vel.set_ylim(
                 0,
                 max(
-                    self.params.v_max * 1.1,
-                    np.max(self.params.vel_history[: frame + 1]) * 1.1,
+                    self.cfg.v_max * 1.1,
+                    np.max(self.data.vel_history[: frame + 1]) * 1.1,
                 ),
             )
             self.ax_acc.set_ylim(
                 0,
                 max(
-                    self.params.a_max * 1.1,
-                    np.max(self.params.accel_history[: frame + 1]) * 1.1,
+                    self.cfg.a_max * 1.1,
+                    np.max(self.data.accel_history[: frame + 1]) * 1.1,
                 ),
             )
             self.ax_err.set_ylim(
                 0,
                 max(
                     0.1,
-                    np.max(self.params.err_history[: frame + 1]) * 1.1,
+                    np.max(self.data.err_history[: frame + 1]) * 1.1,
                 ),
             )
+            # Force panel ylim: based on actual data + limit reference
+            if u_history is not None and len(u_history) > 0:
+                u_hist = np.asarray(u_history[: frame + 1], dtype=float)
+                force_ref = self._force_limit
+                if self._force_comp_slices is None:
+                    # Thruster mode: all 8 components
+                    n_comp = min(8, u_hist.shape[-1])
+                    fdata = u_hist[:, :, :n_comp]
+                    y_top = max(
+                        np.max(np.abs(fdata)) * 1.1 if fdata.size else 0.1,
+                        (force_ref * 1.2 if force_ref is not None else 0.1),
+                        0.1,
+                    )
+                    self.ax_force_panels[0].set_ylim(-y_top, y_top)
+                else:
+                    for k, ax in enumerate(self.ax_force_panels):
+                        if u_hist.shape[-1] > k:
+                            fvals = u_hist[:, :, k]
+                            y_top = max(
+                                np.max(np.abs(fvals)) * 1.1 if fvals.size else 0.1,
+                                (force_ref * 1.2 if force_ref is not None else 0.1),
+                                0.1,
+                            )
+                            ax.set_ylim(-y_top, y_top)
 
         if self.has_fov:
             self.ax_fov_x.set_xlim(0, T)
             self.ax_fov_y.set_xlim(0, T)
             max_x = max(
-                np.degrees(self.params.theta_max_x) + 5.0,
-                np.max(np.abs(self.params.fov_history[: frame + 1, :, 0])) * 1.1,
+                np.degrees(self.cfg.theta_max_x) + 5.0,
+                np.max(np.abs(self.data.fov_history[: frame + 1, :, 0])) * 1.1,
             )
             max_y = max(
-                np.degrees(self.params.theta_max_y) + 5.0,
-                np.max(np.abs(self.params.fov_history[: frame + 1, :, 1])) * 1.1,
+                np.degrees(self.cfg.theta_max_y) + 5.0,
+                np.max(np.abs(self.data.fov_history[: frame + 1, :, 1])) * 1.1,
             )
             self.ax_fov_x.set_ylim(-max_x, max_x)
             self.ax_fov_y.set_ylim(-max_y, max_y)
@@ -430,15 +613,15 @@ class Animation:
 
         # Telemetry text
         stats = []
-        stats.append(f"time = {frame * self.params.dt:6.2f} s")
-        stats.append(f"mode = {getattr(self.params, 'simulation_mode', 'simulation')}")
+        stats.append(f"time = {frame * self.cfg.dt:6.2f} s")
+        stats.append(f"mode = {self.cfg.simulation_mode}")
         stats.append("-" * 24)
         current_mean_err = (
-            np.mean(self.params.err_history[frame, 1:]) if self.N > 1 else 0.0
+            np.mean(self.data.err_history[frame, 1:]) if self.N > 1 else 0.0
         )
         stats.append(f"mean err = {current_mean_err:6.3f} m")
         for i in range(self.N):
-            stats.append(f"A{i}: |v| = {self.params.vel_history[frame, i]:5.2f}")
+            stats.append(f"A{i}: |v| = {self.data.vel_history[frame, i]:5.2f}")
         self.telemetry_text.set_text("\n".join(stats))
 
     # ============================================================
@@ -447,14 +630,12 @@ class Animation:
 
     def plot_topology(self, save_path=None, show=False):
         positions = (
-            self.params.history[0]
-            if hasattr(self.params, "history") and len(self.params.history) > 0
-            else self.params.x
+            self.data.history[0] if len(self.data.history) > 0 else self.scenario.x
         )
         return plot_graph_from_adjacency(
             positions=positions,
-            adjacency=self.params.A,
-            directed=bool(self.params.mode_graph),
+            adjacency=self.scenario.A,
+            directed=bool(self.cfg.mode_graph),
             title="Graph Topology",
             show=show,
             save_path=save_path,
@@ -466,34 +647,66 @@ class Animation:
         1) scalar radial barrier slice (intuition)
         2) full vector recentered barrier surface in 2D
         """
-        grid_limit = 1.5 * self.params.d_max
+        grid_limit = 1.5 * self.cfg.d_max
+        edge_ref, d_des = self._barrier_edge_reference_2d()
+        d_des_norm = float(np.linalg.norm(d_des))
+        unit_des = d_des / max(d_des_norm, 1e-12)
 
-        # ---------- scalar radial slice ----------
-        d_range = np.linspace(-grid_limit, grid_limit, 1200)
-        B_vals = self._barrier_scalar(np.abs(d_range))
-
-        d_des_norm = getattr(self.params, "R", 1.0)
-        B_des = self._barrier_scalar(np.array([d_des_norm]))[0]
-        grad_approx = (
-            self._barrier_scalar(np.array([d_des_norm + 1e-3]))[0]
-            - self._barrier_scalar(np.array([d_des_norm - 1e-3]))[0]
-        ) / (2e-3)
-        B_rec_slice = B_vals - B_des - grad_approx * (np.abs(d_range) - d_des_norm)
+        # ---------- scalar slice along selected edge direction ----------
+        s_range = np.linspace(-grid_limit, grid_limit, 1200)
+        D_line = s_range[:, None] * unit_des[None, :]
+        r_line = np.linalg.norm(D_line, axis=1)
+        B_conn_vals = self._connectivity_barrier_scalar(r_line)
+        B_coll_vals = self._collision_barrier_scalar(r_line)
+        B_vals = self._barrier_vector(D_line)
+        B_des = self._barrier_vector(d_des[None, :])[0]
+        grad_B_des = self._grad_barrier(d_des[None, :])[0]
+        B_rec_slice = B_vals - B_des - ((D_line - d_des[None, :]) @ grad_B_des)
 
         fig1 = plt.figure("Barrier Slice", figsize=(8, 5))
-        plt.plot(d_range, B_vals, "--", color="gray", alpha=0.7, label="Barrier")
-        plt.plot(d_range, B_rec_slice, "b", lw=2, label="Recentered slice")
+        plt.plot(s_range, B_vals, "--", color="gray", alpha=0.7, label="Barrier")
+        plt.plot(s_range, B_rec_slice, "b", lw=2, label="Recentered slice")
         plt.axvline(d_des_norm, color="g", ls=":", label="Target norm")
         plt.axvline(-d_des_norm, color="g", ls=":")
-        plt.axvline(self.params.d_max, color="r", ls=":", label="d_max")
-        plt.axvline(-self.params.d_max, color="r", ls=":")
-        plt.axvline(self.params.d_min, color="darkred", ls=":", label="d_min")
-        plt.axvline(-self.params.d_min, color="darkred", ls=":")
-        plt.title("Scalar Barrier Slice")
-        plt.xlabel("Relative coordinate")
+        plt.axvline(self.cfg.d_max, color="r", ls=":", label="d_max")
+        plt.axvline(-self.cfg.d_max, color="r", ls=":")
+        plt.axvline(self.cfg.d_min, color="darkred", ls=":", label="d_min")
+        plt.axvline(-self.cfg.d_min, color="darkred", ls=":")
+        if edge_ref is None:
+            plt.title("Scalar Barrier Slice (fallback desired vector)")
+        else:
+            plt.title(f"Scalar Barrier Slice Along Edge {edge_ref[0]}->{edge_ref[1]}")
+        plt.xlabel("Coordinate along selected desired direction")
         plt.ylabel("Potential")
         plt.grid(alpha=0.3)
         plt.legend()
+
+        # ---------- separate barrier components ----------
+        fig3, (axc, axk) = plt.subplots(1, 2, figsize=(12, 4.5))
+
+        axc.plot(s_range, B_conn_vals, color="tab:green", lw=2, label="B_conn")
+        axc.axvline(self.cfg.d_max, color="r", ls=":", label="d_max")
+        axc.axvline(-self.cfg.d_max, color="r", ls=":")
+        axc.set_title("Connectivity Barrier")
+        axc.set_xlabel("Coordinate along selected desired direction")
+        axc.set_ylabel("Potential")
+        axc.grid(alpha=0.3)
+        axc.legend()
+
+        axk.plot(s_range, B_coll_vals, color="tab:orange", lw=2, label="B_coll")
+        axk.axvline(self.cfg.d_min, color="darkred", ls=":", label="d_min")
+        axk.axvline(-self.cfg.d_min, color="darkred", ls=":")
+        axk.set_title("Collision-Avoidance Barrier")
+        axk.set_xlabel("Coordinate along selected desired direction")
+        axk.set_ylabel("Potential")
+        axk.grid(alpha=0.3)
+        axk.legend()
+
+        if edge_ref is None:
+            fig3.suptitle("Barrier Components (fallback desired vector)")
+        else:
+            fig3.suptitle(f"Barrier Components Along Edge {edge_ref[0]}->{edge_ref[1]}")
+        fig3.tight_layout()
 
         # ---------- full vector recentered barrier in 2D ----------
         res = 150
@@ -502,7 +715,6 @@ class Animation:
         X, Y = np.meshgrid(x, y)
         D = np.stack([X, Y], axis=-1)
 
-        d_des = np.array([d_des_norm, 0.0])
         B = self._barrier_vector(D)
         B_des_full = self._barrier_vector(d_des[None, None, :])[0, 0]
         grad_B_des = self._grad_barrier(d_des[None, None, :])[0, 0]
@@ -523,9 +735,14 @@ class Animation:
             [0.0],
             color="red",
             s=80,
-            label="Desired equilibrium",
+            label="Desired equilibrium (selected edge)",
         )
-        ax2.set_title("Full Vector Recentered Barrier Surface")
+        if edge_ref is None:
+            ax2.set_title("Full Vector Recentered Barrier Surface (fallback desired)")
+        else:
+            ax2.set_title(
+                f"Full Vector Recentered Barrier Surface (edge {edge_ref[0]}->{edge_ref[1]})"
+            )
         ax2.set_xlabel("d_x")
         ax2.set_ylabel("d_y")
         ax2.set_zlabel("B_rec(d)")
@@ -539,11 +756,14 @@ class Animation:
             fig2.savefig(
                 f"{save_prefix}_barrier_vector.png", dpi=200, bbox_inches="tight"
             )
+            fig3.savefig(
+                f"{save_prefix}_barrier_components.png", dpi=200, bbox_inches="tight"
+            )
 
         if show:
             plt.show()
 
-        return fig1, fig2
+        return fig1, fig2, fig3
 
     # ============================================================
     # animation / static / save
@@ -569,6 +789,7 @@ class Animation:
                 + [self.err_mean_line]
                 + self.vel_lines
                 + self.acc_lines
+                + self.force_lines
                 + [self.telemetry_text]
             )
             if self.has_fov:
@@ -578,7 +799,7 @@ class Animation:
         self.animation = FuncAnimation(
             self.fig_space,
             update_frame,
-            frames=min(params.steps, len(params.history)),
+            frames=min(params.config.steps, len(params.data.history)),
             interval=1000 / fps,
             blit=False,
             repeat=False,
@@ -605,11 +826,11 @@ class Animation:
         show_barrier=False,
         save_prefix=None,
     ):
-        if len(params.history) == 0:
+        if len(params.data.history) == 0:
             plt.show()
             return
 
-        frame = min(params.steps - 1, len(params.history) - 1)
+        frame = min(params.config.steps - 1, len(params.data.history) - 1)
         self.plot_handle(frame, u_history)
 
         if save_prefix is not None:

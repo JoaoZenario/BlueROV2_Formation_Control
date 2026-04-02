@@ -128,6 +128,27 @@ class ControllerBase(ABC):
                 f"||d_des|| must satisfy {self.cfg.d_min} < ||d_des|| < {self.cfg.d_max}."
             )
 
+    def _class_k(self, V: float) -> float:
+        """
+        Saturating class K function for the CLF decay condition.
+
+        If ``clf_alpha_sat`` is None (default), returns the standard linear
+        term  alpha * V.
+
+        Otherwise returns the smooth saturating function
+
+            alpha_sat * tanh(alpha * V / alpha_sat)
+
+        which has slope ``alpha`` near V = 0 and saturates to
+        ``±alpha_sat`` for large V, preventing overly aggressive demands
+        when the Lyapunov value is large.
+        """
+        alpha = self.cfg.clf_alpha
+        sat = getattr(self.cfg, "clf_alpha_sat", None)
+        if sat is None:
+            return alpha * float(V)
+        return float(sat * np.tanh(alpha * float(V) / sat))
+
     # ============================================================
     # Connectivity barrier
     # B_conn(d) = ln( d_max^2 / (d_max^2 - ||d||^2) )
@@ -909,6 +930,7 @@ class BlueROV2Config(BarrierConfig):
     tau_v_max: Optional[float] = None
 
     clf_alpha: float = 2.0
+    clf_alpha_sat: Optional[float] = None
     clf_slack_weight: float = 1000.0
     clf_force_weight: float = 1.0
     thrust_weight: float = 1.0
@@ -939,6 +961,8 @@ class BlueROV2Config(BarrierConfig):
             raise ValueError("tau_v_max must be positive when provided.")
         if self.clf_alpha <= 0.0:
             raise ValueError("clf_alpha must be positive.")
+        if self.clf_alpha_sat is not None and self.clf_alpha_sat <= 0.0:
+            raise ValueError("clf_alpha_sat must be positive when provided.")
         if self.clf_slack_weight <= 0.0:
             raise ValueError("clf_slack_weight must be positive.")
         if self.clf_force_weight <= 0.0:
@@ -1411,7 +1435,7 @@ class BlueROV2Controller(ControllerBase):
         q_obj = np.zeros(4)
 
         A = np.hstack([LgV, np.array([[-1.0]])]).reshape(1, 4)
-        b = np.array([-self.cfg.clf_alpha * V - LfV])
+        b = np.array([-self._class_k(V) - LfV])
 
         if self.cfg.tau_v_max is None:
             lb_tau = np.full(3, -np.inf)
@@ -1525,7 +1549,7 @@ class BlueROV2Controller(ControllerBase):
         q_obj = np.zeros(m + 1)
 
         A = np.hstack([LgV_f, np.array([[-1.0]])]).reshape(1, m + 1)
-        b = np.array([-self.cfg.clf_alpha * V - LfV])
+        b = np.array([-self._class_k(V) - LfV])
 
         lb = np.hstack([f_min, 0.0])
         ub = np.hstack([f_max, np.inf])
