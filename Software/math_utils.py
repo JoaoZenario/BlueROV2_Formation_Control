@@ -42,6 +42,60 @@ def smooth_saturate(
     return scale * v
 
 
+def smooth_saturate_scalar(v: float, max_abs: float, eps: float = 1e-9) -> float:
+    """
+    Smooth saturation for a scalar value using tanh.
+
+    - Near zero: approximately identity
+    - For large values: smoothly saturates to max_abs
+
+    Parameters
+    ----------
+    v : float
+        Input scalar.
+    max_abs : float
+        Maximum allowed absolute value.
+    eps : float
+        Small threshold to avoid division by zero.
+    """
+    if max_abs <= 0.0:
+        raise ValueError("max_abs must be positive.")
+
+    scaled_v = v / (max_abs + eps)
+    saturated_v = max_abs * np.tanh(scaled_v)
+    return saturated_v
+
+
+def smooth_saturate_componentwise(
+    v: np.ndarray, max_abs: np.ndarray, eps: float = 1e-9
+) -> np.ndarray:
+    """
+    Component-wise smooth saturation using tanh.
+
+    - Near zero: approximately identity
+    - For large values: smoothly saturates to max_abs
+
+    Parameters
+    ----------
+    v : np.ndarray
+        Input vector.
+    max_abs : np.ndarray
+        Maximum allowed absolute value for each component.
+    eps : float
+        Small threshold to avoid division by zero.
+    """
+    v = np.asarray(v, dtype=float).reshape(-1)
+    max_abs = np.asarray(max_abs, dtype=float).reshape(-1)
+
+    if np.any(max_abs <= 0.0):
+        raise ValueError("All elements of max_abs must be positive.")
+
+    # Avoid division by zero by adding a small epsilon inside the tanh argument
+    scaled_v = v / (max_abs + eps)
+    saturated_v = max_abs * np.tanh(scaled_v)
+    return saturated_v
+
+
 def skew(w: Array) -> Array:
     w = np.asarray(w, dtype=float).reshape(3)
     return np.array(

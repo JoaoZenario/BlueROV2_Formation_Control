@@ -7,7 +7,12 @@ from typing import Literal, Optional, Tuple
 import numpy as np
 
 
-from math_utils import smooth_saturate, skew
+from math_utils import (
+    smooth_saturate,
+    smooth_saturate_componentwise,
+    smooth_saturate_scalar,
+    skew,
+)
 from rot_utils import rotation_matrix_from_quaternion
 
 from scipy import sparse
@@ -1090,6 +1095,7 @@ class BlueROV2Config(BarrierConfig):
     clf_alpha_sat: Optional[float] = None
     clf_slack_weight: float = 1000.0
     clf_force_weight: float = 1.0
+    clf_torque_weight: float = 10.0
     thrust_weight: float = 1.0
     lgv_epsilon: float = 1e-6
 
@@ -1099,6 +1105,38 @@ class BlueROV2Config(BarrierConfig):
     # attitude stabilisation gains
     k_att: float = 5.0
     k_att_d: float = 2.0
+
+    # ============================================================
+    # Field-of-view configuration
+    # ============================================================
+    use_fov: bool = False
+
+    # pyramidal FoV half-angles
+    theta_h_max: float = np.deg2rad(45.0)
+    theta_v_max: float = np.deg2rad(30.0)
+
+    # weights for translational and rotational FoV terms
+    mu_fov_pos: float = 1.0
+    mu_fov_att: float = 1.0
+
+    # rotational gain associated with FoV correction
+    k_fov_att: float = 2.0
+
+    # --- FoV rotational backstepping ---
+    k_fov_omega: float = 2.0  # gain for virtual desired angular velocity
+    k_fov_backstep: float = 3.0  # gain on angular-rate tracking error
+    omega_fov_max: float = 1.0  # componentwise saturation bound for omega_d
+
+    # desired normalized camera coordinates
+    alpha_h_des: float = 0.0
+    alpha_v_des: float = 0.0
+
+    # camera extrinsics: r_c = R_cb (r_b - p_cb)
+    R_cb: Optional[Array] = None
+    p_cb: Optional[Array] = None
+
+    # numerical regularization
+    fov_eps: float = 1e-6
 
     def __post_init__(self) -> None:
         super().__post_init__()
@@ -1128,6 +1166,8 @@ class BlueROV2Config(BarrierConfig):
             raise ValueError("clf_slack_weight must be positive.")
         if self.clf_force_weight <= 0.0:
             raise ValueError("clf_force_weight must be positive.")
+        if self.clf_torque_weight <= 0.0:
+            raise ValueError("clf_torque_weight must be positive.")
         if self.thrust_weight <= 0.0:
             raise ValueError("thrust_weight must be positive.")
         if self.lgv_epsilon <= 0.0:
@@ -1139,15 +1179,49 @@ class BlueROV2Config(BarrierConfig):
         if self.k_att_d < 0.0:
             raise ValueError("k_att_d must be nonnegative.")
 
+        if self.use_fov:
+            if self.theta_h_max <= 0.0:
+                raise ValueError("theta_h_max must be positive.")
+            if self.theta_v_max <= 0.0:
+                raise ValueError("theta_v_max must be positive.")
+            if self.mu_fov_pos < 0.0:
+                raise ValueError("mu_fov_pos must be nonnegative.")
+            if self.mu_fov_att < 0.0:
+                raise ValueError("mu_fov_att must be nonnegative.")
+            if self.k_fov_att < 0.0:
+                raise ValueError("k_fov_att must be nonnegative.")
+            if self.fov_eps <= 0.0:
+                raise ValueError("fov_eps must be positive.")
+            if abs(self.alpha_h_des) >= 1.0:
+                raise ValueError("alpha_h_des must satisfy |alpha_h_des| < 1.")
+            if abs(self.alpha_v_des) >= 1.0:
+                raise ValueError("alpha_v_des must satisfy |alpha_v_des| < 1.")
+            if self.k_fov_omega <= 0.0:
+                raise ValueError("k_fov_omega must be positive.")
+            if self.k_fov_backstep <= 0.0:
+                raise ValueError("k_fov_backstep must be positive.")
+            if self.omega_fov_max <= 0.0:
+                raise ValueError("omega_fov_max must be positive.")
+
+        if self.R_cb is None:
+            self.R_cb = np.eye(3)
+        else:
+            self.R_cb = np.asarray(self.R_cb, dtype=float).reshape(3, 3)
+
+        if self.p_cb is None:
+            self.p_cb = np.zeros(3)
+        else:
+            self.p_cb = np.asarray(self.p_cb, dtype=float).reshape(3)
+
 
 class BlueROV2Controller(ControllerBase):
     """
-    Refactored BlueROV2 low-level controller.
+    Refactored BlueROV2 low-level controller with optional FoV-aware coupling.
 
     Main structure
     --------------
     1) Outer loop:
-           v_des_I = -c_outer * sum_k grad Phi_k(d_k)
+           v_des_I = -c_outer * (distance/barrier gradient + FoV gradient)
 
     2) Command filter:
            v_f_I, dv_f_I
@@ -1157,14 +1231,9 @@ class BlueROV2Controller(ControllerBase):
            - CLF-QP on translational force
            - CLF-QP directly on thrusters
 
-    Important
-    ---------
-    The passivating term is now computed internally as
-
-        xi_b = R(q)^T * grad_{p_i} V1_i
-
-    where grad_{p_i} V1_i is assembled from the incident edge gradients and
-    the incidence signs provided by the caller.
+    If enabled, the FoV constraint contributes both to:
+      - the translational gradient,
+      - the rotational torque.
     """
 
     def __init__(self, robot_id: int, config: BlueROV2Config, rov_model):
@@ -1175,6 +1244,10 @@ class BlueROV2Controller(ControllerBase):
         # Command-filter state for inertial translational reference
         self.v_f_I = np.zeros(3)
         self.dv_f_I = np.zeros(3)
+
+        # Command-filter state for FoV angular reference
+        self.omega_f = np.zeros(3)
+        self.domega_f = np.zeros(3)
 
     # ============================================================
     # Basic utilities
@@ -1192,20 +1265,510 @@ class BlueROV2Controller(ControllerBase):
         self.v_f_I[:] = value
         self.dv_f_I[:] = 0.0
 
+    def reset_fov_angular_filter_state(self, value: Optional[Array] = None) -> None:
+        if value is None:
+            self.omega_f[:] = 0.0
+            self.domega_f[:] = 0.0
+            return
+
+        value = np.asarray(value, dtype=float).reshape(3)
+        self.omega_f[:] = value
+        self.domega_f[:] = 0.0
+
     def _sat_vector(self, x: Array, max_norm: Optional[float]) -> Array:
-        """Apply Euclidean-norm smooth saturation to a velocity vector."""
         x = np.asarray(x, dtype=float).reshape(-1)
         if max_norm is None:
             return x
-
-        x = smooth_saturate(x, max_norm=max_norm)
-        return x
+        return smooth_saturate(x, max_norm=max_norm)
 
     def saturate_velocity(self, v: Array) -> Array:
         return self._sat_vector(v, self.cfg.v_max)
 
+    def saturate_angular_velocity_components(self, omega_cmd: Array) -> Array:
+        omega_cmd = np.asarray(omega_cmd, dtype=float).reshape(-1)
+        max_abs = np.full_like(omega_cmd, self.cfg.omega_fov_max, dtype=float)
+        return smooth_saturate_componentwise(omega_cmd, max_abs=max_abs)
+
+    def saturate_rotational_torque_components(self, tau_omega: Array) -> Array:
+        tau_omega = np.asarray(tau_omega, dtype=float).reshape(3)
+
+        u_max = getattr(self.rov, "u_max", None)
+        if u_max is None:
+            return tau_omega
+
+        max_abs = np.abs(np.asarray(u_max, dtype=float).reshape(-1)[3:6])
+        return smooth_saturate_componentwise(tau_omega, max_abs=max_abs)
+
     def saturate_translational_force(self, tau_v: Array) -> Array:
         return self._sat_vector(tau_v, self.cfg.tau_v_max)
+
+    # ============================================================
+    # Camera / FoV utilities
+    # ============================================================
+
+    def relative_position_camera_frame(
+        self,
+        p_i: Array,
+        q_i: Array,
+        p_target_I: Array,
+    ) -> Tuple[Array, Array, Array]:
+        """
+        Returns
+        -------
+        r_b : relative target position in body frame
+        r_c : relative target position in camera frame
+        rel_I : relative target position in inertial frame
+        """
+        p_i = np.asarray(p_i, dtype=float).reshape(3)
+        q_i = np.asarray(q_i, dtype=float).reshape(4)
+        p_target_I = np.asarray(p_target_I, dtype=float).reshape(3)
+
+        rel_I = p_target_I - p_i
+        R_b2I = rotation_matrix_from_quaternion(q_i)
+        r_b = R_b2I.T @ rel_I
+        r_c = self.cfg.R_cb @ (r_b - self.cfg.p_cb)
+        return r_b, r_c, rel_I
+
+    def desired_camera_bearing(self) -> Array:
+        tan_h = np.tan(self.cfg.theta_h_max)
+        tan_v = np.tan(self.cfg.theta_v_max)
+
+        d_des_c = np.array(
+            [
+                1.0,
+                self.cfg.alpha_h_des * tan_h,
+                self.cfg.alpha_v_des * tan_v,
+            ],
+            dtype=float,
+        )
+        norm_d_des = max(float(np.linalg.norm(d_des_c)), self.cfg.fov_eps)
+        return d_des_c / norm_d_des
+
+    def fov_pointing_error_body(
+        self,
+        p_i: Array,
+        q_i: Array,
+        p_target_I: Optional[Array],
+    ) -> Tuple[Array, dict]:
+        if (not self.cfg.use_fov) or (p_target_I is None):
+            return np.zeros(3), {"fov_active": False}
+
+        _, r_c, _ = self.relative_position_camera_frame(
+            p_i=p_i,
+            q_i=q_i,
+            p_target_I=p_target_I,
+        )
+
+        norm_r_c = max(float(np.linalg.norm(r_c)), self.cfg.fov_eps)
+        d_c = r_c / norm_r_c
+        d_des_c = self.desired_camera_bearing()
+
+        pointing_error_c = np.cross(d_des_c, d_c)
+        alignment = float(np.dot(d_c, d_des_c))
+
+        if np.linalg.norm(pointing_error_c) < self.cfg.fov_eps and alignment < 0.0:
+            ref_axis = (
+                np.array([0.0, 0.0, 1.0], dtype=float)
+                if abs(d_des_c[2]) < 0.9
+                else np.array([0.0, 1.0, 0.0], dtype=float)
+            )
+            pointing_error_c = np.cross(ref_axis, d_des_c)
+            norm_fallback = max(
+                float(np.linalg.norm(pointing_error_c)),
+                self.cfg.fov_eps,
+            )
+            pointing_error_c = pointing_error_c / norm_fallback
+
+        pointing_error_b = self.cfg.R_cb.T @ pointing_error_c
+        return pointing_error_b, {
+            "d_c_fov": d_c,
+            "d_des_c_fov": d_des_c,
+            "pointing_error_c_fov": pointing_error_c,
+            "pointing_error_b_fov": pointing_error_b,
+            "pointing_alignment_fov": alignment,
+        }
+
+    def fov_normalized_coordinates(
+        self,
+        r_c: Array,
+    ) -> Tuple[float, float, float]:
+        r_c = np.asarray(r_c, dtype=float).reshape(3)
+        rx, ry, rz = r_c
+
+        rx_safe = max(float(rx), self.cfg.fov_eps)
+        tan_h = np.tan(self.cfg.theta_h_max)
+        tan_v = np.tan(self.cfg.theta_v_max)
+
+        alpha_h = float(ry / (rx_safe * tan_h))
+        alpha_v = float(rz / (rx_safe * tan_v))
+        return alpha_h, alpha_v, rx_safe
+
+    def fov_virtual_angular_velocity(
+        self,
+        p_i: Array,
+        q_i: Array,
+        p_target_I: Optional[Array],
+    ) -> Tuple[Array, dict]:
+        """
+        First backstepping step for the FoV rotational channel.
+
+        Defines the virtual desired angular velocity as a descent direction
+        of the FoV potential:
+            omega_des = -k_fov_omega * mu_fov_att * grad_att_b
+
+        and then applies smooth componentwise saturation.
+        """
+        if (not self.cfg.use_fov) or (p_target_I is None):
+            return np.zeros(3), {"fov_active": False}
+
+        _, grad_att_b, dbg = self.compute_fov_terms(
+            p_i=p_i,
+            q_i=q_i,
+            p_target_I=p_target_I,
+        )
+        pointing_error_b, dbg_pointing = self.fov_pointing_error_body(
+            p_i=p_i,
+            q_i=q_i,
+            p_target_I=p_target_I,
+        )
+
+        omega_des_nom, omega_des, pointing_error_b_cmd = (
+            self._fov_bounded_angular_rate_command(pointing_error_b)
+        )
+
+        dbg = {
+            **dbg,
+            **dbg_pointing,
+            "grad_att_b_fov_cmd": grad_att_b,
+            "pointing_error_b_fov_cmd": pointing_error_b_cmd,
+            "omega_des_nom": omega_des_nom,
+            "omega_des": omega_des,
+        }
+        return omega_des, dbg
+
+    def _fov_bounded_angular_rate_command(
+        self,
+        pointing_error_b: Array,
+    ) -> Tuple[Array, Array, Array]:
+        pointing_error_b = np.asarray(pointing_error_b, dtype=float).reshape(3)
+
+        gain = self.cfg.k_fov_omega * self.cfg.mu_fov_att
+        omega_des_nom = gain * pointing_error_b
+        omega_des = self.saturate_angular_velocity_components(omega_des_nom)
+
+        if gain <= 0.0:
+            pointing_error_b_cmd = np.zeros(3)
+        else:
+            pointing_error_b_cmd = omega_des / gain
+
+        return omega_des_nom, omega_des, pointing_error_b_cmd
+
+    def fov_formation_motion_scale(self, dbg_fov: dict) -> float:
+        if not dbg_fov.get("fov_active", False):
+            return 1.0
+
+        alpha_h_err = float(dbg_fov.get("alpha_h", 0.0) - self.cfg.alpha_h_des)
+        alpha_v_err = float(dbg_fov.get("alpha_v", 0.0) - self.cfg.alpha_v_des)
+        occupancy = max(abs(alpha_h_err), abs(alpha_v_err))
+
+        alignment = float(dbg_fov.get("pointing_alignment_fov", 1.0))
+        if alignment <= 0.0:
+            return 0.0
+
+        soft_zone = 0.35
+        hard_zone = 0.70
+        if occupancy <= soft_zone:
+            return 1.0
+        if occupancy >= hard_zone:
+            return 0.0
+
+        s = (occupancy - soft_zone) / max(hard_zone - soft_zone, self.cfg.fov_eps)
+        smoothstep = s * s * (3.0 - 2.0 * s)
+        return float(1.0 - smoothstep)
+
+    def update_fov_angular_filter(
+        self,
+        omega_des: Array,
+    ) -> Tuple[Array, Array]:
+        omega_des = np.asarray(omega_des, dtype=float).reshape(3)
+
+        if self.cfg.filter_type == "first_order":
+            self.omega_f, self.domega_f = self.first_order_filter_step(
+                y_f=self.omega_f,
+                y_des=omega_des,
+                dt=self.cfg.dt,
+                lam=self.cfg.lam,
+            )
+            return self.omega_f.copy(), self.domega_f.copy()
+
+        self.omega_f, self.domega_f, _ = self.second_order_filter_step(
+            y_f=self.omega_f,
+            dy_f=self.domega_f,
+            y_des=omega_des,
+            dt=self.cfg.dt,
+            wn=self.cfg.wn,
+            zeta=self.cfg.zeta,
+        )
+        return self.omega_f.copy(), self.domega_f.copy()
+
+    def fov_barrier(
+        self,
+        alpha_h: float,
+        alpha_v: float,
+    ) -> float:
+        den_h = max(1.0 - alpha_h**2, self.cfg.fov_eps)
+        den_v = max(1.0 - alpha_v**2, self.cfg.fov_eps)
+        return float(np.log(1.0 / den_h) + np.log(1.0 / den_v))
+
+    def fov_barrier_gradient_alpha(
+        self,
+        alpha_h: float,
+        alpha_v: float,
+        recentered: bool = True,
+    ) -> Array:
+        den_h = max(1.0 - alpha_h**2, self.cfg.fov_eps)
+        den_v = max(1.0 - alpha_v**2, self.cfg.fov_eps)
+
+        grad = np.array(
+            [
+                2.0 * alpha_h / den_h,
+                2.0 * alpha_v / den_v,
+            ],
+            dtype=float,
+        )
+
+        if recentered:
+            ahd = self.cfg.alpha_h_des
+            avd = self.cfg.alpha_v_des
+            den_hd = max(1.0 - ahd**2, self.cfg.fov_eps)
+            den_vd = max(1.0 - avd**2, self.cfg.fov_eps)
+            grad_des = np.array(
+                [
+                    2.0 * ahd / den_hd,
+                    2.0 * avd / den_vd,
+                ],
+                dtype=float,
+            )
+            grad = grad - grad_des
+
+        return grad
+
+    def fov_alpha_jacobian_wrt_rc(
+        self,
+        r_c: Array,
+    ) -> Array:
+        """
+        Jacobian of [alpha_h, alpha_v] wrt r_c = [r_x, r_y, r_z].
+
+        Output shape: (2, 3)
+        """
+        r_c = np.asarray(r_c, dtype=float).reshape(3)
+        rx, ry, rz = r_c
+        rx_safe = max(float(rx), self.cfg.fov_eps)
+
+        tan_h = np.tan(self.cfg.theta_h_max)
+        tan_v = np.tan(self.cfg.theta_v_max)
+
+        return np.array(
+            [
+                [
+                    -ry / (rx_safe**2 * tan_h),
+                    1.0 / (rx_safe * tan_h),
+                    0.0,
+                ],
+                [
+                    -rz / (rx_safe**2 * tan_v),
+                    0.0,
+                    1.0 / (rx_safe * tan_v),
+                ],
+            ],
+            dtype=float,
+        )
+
+    def fov_gradient_wrt_rc(
+        self,
+        r_c: Array,
+        recentered: bool = True,
+    ) -> Tuple[Array, dict]:
+        r_c = np.asarray(r_c, dtype=float).reshape(3)
+
+        alpha_h, alpha_v, rx_safe = self.fov_normalized_coordinates(r_c)
+        grad_alpha = self.fov_barrier_gradient_alpha(
+            alpha_h=alpha_h,
+            alpha_v=alpha_v,
+            recentered=recentered,
+        )
+        J = self.fov_alpha_jacobian_wrt_rc(r_c)
+        grad_rc = J.T @ grad_alpha
+
+        debug = {
+            "r_c": r_c,
+            "alpha_h": alpha_h,
+            "alpha_v": alpha_v,
+            "rx_safe": rx_safe,
+            "grad_alpha_fov": grad_alpha,
+            "J_alpha_rc": J,
+            "B_fov": self.fov_barrier(alpha_h, alpha_v),
+        }
+        return grad_rc, debug
+
+    def fov_position_gradient_inertial(
+        self,
+        q_i: Array,
+        grad_rc: Array,
+    ) -> Array:
+        """
+        ∇_{p_i} B_fov = - R(q_i) R_cb^T ∇_{r_c} B_fov
+        """
+        q_i = np.asarray(q_i, dtype=float).reshape(4)
+        grad_rc = np.asarray(grad_rc, dtype=float).reshape(3)
+
+        R_b2I = rotation_matrix_from_quaternion(q_i)
+        return -R_b2I @ self.cfg.R_cb.T @ grad_rc
+
+    def fov_attitude_gradient_body(
+        self,
+        r_b: Array,
+        grad_rc: Array,
+    ) -> Array:
+        """
+        grad_theta B_fov = r_b × (R_cb^T grad_rc)
+        """
+        r_b = np.asarray(r_b, dtype=float).reshape(3)
+        grad_rc = np.asarray(grad_rc, dtype=float).reshape(3)
+
+        body_term = self.cfg.R_cb.T @ grad_rc
+        return np.cross(r_b, body_term)
+
+    def compute_fov_terms(
+        self,
+        p_i: Array,
+        q_i: Array,
+        p_target_I: Optional[Array],
+    ) -> Tuple[Array, Array, dict]:
+        """
+        Returns
+        -------
+        grad_pos_I : translational FoV gradient in inertial frame
+        grad_att_b : rotational FoV gradient in body frame
+        debug : diagnostic info
+        """
+        if (not self.cfg.use_fov) or (p_target_I is None):
+            return np.zeros(3), np.zeros(3), {"fov_active": False}
+
+        r_b, r_c, rel_I = self.relative_position_camera_frame(
+            p_i=p_i,
+            q_i=q_i,
+            p_target_I=p_target_I,
+        )
+        grad_rc, dbg_rc = self.fov_gradient_wrt_rc(
+            r_c=r_c,
+            recentered=True,
+        )
+        grad_pos_I = self.fov_position_gradient_inertial(
+            q_i=q_i,
+            grad_rc=grad_rc,
+        )
+        grad_att_b = self.fov_attitude_gradient_body(
+            r_b=r_b,
+            grad_rc=grad_rc,
+        )
+
+        debug = {
+            "fov_active": True,
+            "r_b": r_b,
+            "r_c": r_c,
+            "rel_I_fov": rel_I,
+            "theta_h": float(np.arctan2(r_c[1], dbg_rc["rx_safe"])),
+            "theta_v": float(np.arctan2(r_c[2], dbg_rc["rx_safe"])),
+            "grad_rc_fov": grad_rc,
+            "grad_pos_I_fov": grad_pos_I,
+            "grad_att_b_fov": grad_att_b,
+            **dbg_rc,
+        }
+        return grad_pos_I, grad_att_b, debug
+
+    def fov_attitude_torque(
+        self,
+        p_i: Array,
+        q_i: Array,
+        nu_i: Array,
+        p_target_I: Optional[Array],
+    ) -> Tuple[Array, dict]:
+        """
+        Command-filtered backstepping torque for the FoV rotational channel.
+
+        Step 1:
+            omega_des = -k_fov_omega * mu_fov_att * grad_att_b
+
+        Step 2:
+            command filter provides (omega_f, domega_f)
+
+        Step 3:
+            e_omega = omega_body - omega_f
+
+        Torque law:
+            tau_r = M_r @ domega_f + h_r
+                    - k_fov_backstep * e_omega
+                    - mu_fov_att * grad_att_b
+        """
+        if (not self.cfg.use_fov) or (p_target_I is None):
+            return np.zeros(3), {"fov_active": False}
+
+        p_i = np.asarray(p_i, dtype=float).reshape(3)
+        q_i = np.asarray(q_i, dtype=float).reshape(4)
+        nu_i = np.asarray(nu_i, dtype=float).reshape(6)
+
+        omega_body = nu_i[3:6]
+        M_r, h_r = self.rotational_partition(p_i, q_i, nu_i)
+
+        # 1) FoV attitude gradient and virtual angular velocity
+        _, grad_att_b, dbg_fov = self.compute_fov_terms(
+            p_i=p_i,
+            q_i=q_i,
+            p_target_I=p_target_I,
+        )
+        pointing_error_b, dbg_pointing = self.fov_pointing_error_body(
+            p_i=p_i,
+            q_i=q_i,
+            p_target_I=p_target_I,
+        )
+
+        omega_des_nom, omega_des, pointing_error_b_cmd = (
+            self._fov_bounded_angular_rate_command(pointing_error_b)
+        )
+
+        # 2) Command filter
+        omega_f, domega_f = self.update_fov_angular_filter(omega_des)
+
+        # 3) Angular-rate tracking error
+        e_omega = omega_body - omega_f
+
+        # 4) Backstepping torque law
+        tau_r = (
+            M_r @ domega_f
+            + h_r
+            - self.cfg.k_fov_backstep * e_omega
+            + self.cfg.k_fov_att * pointing_error_b_cmd
+        )
+        tau_r = self.saturate_rotational_torque_components(tau_r)
+
+        dbg = {
+            **dbg_fov,
+            **dbg_pointing,
+            "omega_body": omega_body,
+            "grad_att_b_fov_cmd": grad_att_b,
+            "pointing_error_b_fov_cmd": pointing_error_b_cmd,
+            "omega_des_nom": omega_des_nom,
+            "omega_des": omega_des,
+            "omega_f": omega_f,
+            "domega_f": domega_f,
+            "e_omega": e_omega,
+            "M_r": M_r,
+            "h_r": h_r,
+            "tau_r_fov": tau_r,
+        }
+        return tau_r, dbg
 
     # ============================================================
     # Outer-loop virtual translational velocity
@@ -1215,16 +1778,17 @@ class BlueROV2Controller(ControllerBase):
         self,
         relative_states: Array,
         desired_relative_states: Array,
-    ) -> Tuple[Array, Array, Array]:
+        p_i: Optional[Array] = None,
+        q_i: Optional[Array] = None,
+        p_target_I: Optional[Array] = None,
+    ) -> Tuple[Array, Array, Array, dict]:
         """
         Returns
         -------
-        summed_grad : np.ndarray, shape (3,)
-            Sum of edge gradients.
-        edge_grads : np.ndarray, shape (n_edges, 3)
-            Individual edge gradients.
-        v_des_I : np.ndarray, shape (3,)
-            Virtual inertial translational velocity.
+        summed_grad_total : total translational gradient
+        edge_grads : distance/connectivity/collision gradients
+        v_des_I : inertial virtual translational velocity
+        debug : diagnostic info
         """
         relative_states = np.asarray(relative_states, dtype=float)
         desired_relative_states = np.asarray(desired_relative_states, dtype=float)
@@ -1239,19 +1803,52 @@ class BlueROV2Controller(ControllerBase):
             )
 
         edge_grads = self.edge_gradients(relative_states, desired_relative_states)
-        summed_grad = np.sum(edge_grads, axis=0)
-        v_des_I = -self.cfg.c_outer * summed_grad
+        summed_grad_edges = np.sum(edge_grads, axis=0)
+
+        grad_fov_pos_I = np.zeros(3)
+        dbg_fov = {"fov_active": False}
+        formation_motion_scale = 1.0
+
+        if (
+            self.cfg.use_fov
+            and (p_i is not None)
+            and (q_i is not None)
+            and (p_target_I is not None)
+        ):
+            grad_fov_pos_I, _, dbg_fov = self.compute_fov_terms(
+                p_i=p_i,
+                q_i=q_i,
+                p_target_I=p_target_I,
+            )
+            _, dbg_pointing = self.fov_pointing_error_body(
+                p_i=p_i,
+                q_i=q_i,
+                p_target_I=p_target_I,
+            )
+            dbg_fov = {**dbg_fov, **dbg_pointing}
+            formation_motion_scale = self.fov_formation_motion_scale(dbg_fov)
+
+        summed_grad_total = (
+            formation_motion_scale * summed_grad_edges
+            + self.cfg.mu_fov_pos * grad_fov_pos_I
+        )
+        v_des_I = -self.cfg.c_outer * summed_grad_total
         v_des_I = self.saturate_velocity(v_des_I)
-        return summed_grad, edge_grads, v_des_I
+
+        debug = {
+            "summed_grad_edges": summed_grad_edges,
+            "grad_fov_pos_I": grad_fov_pos_I,
+            "summed_grad_total": summed_grad_total,
+            "formation_motion_scale": formation_motion_scale,
+            **dbg_fov,
+        }
+        return summed_grad_total, edge_grads, v_des_I, debug
 
     def compute_position_gradient_from_incidence(
         self,
         edge_gradients: Array,
         incidence_signs: Array,
     ) -> Array:
-        """
-        Compute grad_{p_i} V1_i = sum_k [E]_{ik} grad Phi_k(d_k)
-        """
         edge_gradients = np.asarray(edge_gradients, dtype=float)
         incidence_signs = np.asarray(incidence_signs, dtype=float).reshape(-1)
 
@@ -1268,12 +1865,6 @@ class BlueROV2Controller(ControllerBase):
         edge_gradients: Array,
         incidence_signs: Array,
     ) -> Tuple[Array, Array]:
-        """
-        Compute passivating term
-
-            xi_I = grad_{p_i} V1_i
-            xi_b = R(q)^T xi_I
-        """
         q_i = np.asarray(q_i, dtype=float).reshape(4)
         grad_V1_pos_I = self.compute_position_gradient_from_incidence(
             edge_gradients=edge_gradients,
@@ -1314,11 +1905,6 @@ class BlueROV2Controller(ControllerBase):
         q_i: Array,
         omega_i: Array,
     ) -> Tuple[Array, Array]:
-        """
-        If v_b = R^T v_I, then
-
-            dot(v_b) = R^T dot(v_I) - S(omega) v_b
-        """
         q_i = np.asarray(q_i, dtype=float).reshape(4)
         omega_i = np.asarray(omega_i, dtype=float).reshape(3)
 
@@ -1390,13 +1976,6 @@ class BlueROV2Controller(ControllerBase):
         q_i: Array,
         nu_i: Array,
     ) -> Tuple[Array, Array]:
-        """
-        Returns an implementation-oriented reduced partition
-
-            M_v dot(v) + h_v = tau_v + d_v
-
-        Prefer rov_model.translational_partition(chi, nu) when available.
-        """
         p_i = np.asarray(p_i, dtype=float).reshape(3)
         q_i = np.asarray(q_i, dtype=float).reshape(4)
         nu_i = np.asarray(nu_i, dtype=float).reshape(6)
@@ -1418,13 +1997,6 @@ class BlueROV2Controller(ControllerBase):
         q_i: Array,
         nu_i: Array,
     ) -> Tuple[Array, Array]:
-        """
-        Rotational partition of the equations of motion:
-
-            M_r * dot(omega) + h_r = tau_r
-
-        Returns M_r (3×3) and h_r (3,) from the lower block of the full model.
-        """
         p_i = np.asarray(p_i, dtype=float).reshape(3)
         q_i = np.asarray(q_i, dtype=float).reshape(4)
         nu_i = np.asarray(nu_i, dtype=float).reshape(6)
@@ -1447,34 +2019,20 @@ class BlueROV2Controller(ControllerBase):
         nu_i: Array,
         p_i: Optional[Array] = None,
     ) -> Array:
-        """
-        Feedback-linearising attitude stabilisation torque.
-
-        Computes the rotational generalised force that drives the current
-        attitude toward ``q_des`` while damping angular velocity:
-
-            tau_r = M_r @ (-k_att * e_q_s - k_att_d * omega_body) + h_r
-
-        where ``e_q_s = sign(q_err_w) * q_err_xyz`` is the shortest-path
-        quaternion error vector (both quaternions in ``[qx,qy,qz,qw]``
-        scalar-last convention).
-        """
         q_des = np.asarray(q_des, dtype=float).reshape(4)
         q_i = np.asarray(q_i, dtype=float).reshape(4)
         nu_i = np.asarray(nu_i, dtype=float).reshape(6)
         p_i = np.zeros(3) if p_i is None else np.asarray(p_i, dtype=float).reshape(3)
         omega_body = nu_i[3:6]
 
-        # --- quaternion error in scalar-last [qx,qy,qz,qw] form ---
-        # q_err = conj(q_des) ⊗ q_i
         xd, yd, zd, wd = q_des
         xi, yi, zi, wi = q_i
-        # conjugate of q_des: [-xd, -yd, -zd, wd]
+
         ex = wd * xi + (-xd) * wi + (-yd) * zi - (-zd) * yi
         ey = wd * yi - (-xd) * zi + (-yd) * wi + (-zd) * xi
         ez = wd * zi + (-xd) * yi - (-yd) * xi + (-zd) * wi
         ew = wd * wi - (-xd) * xi - (-yd) * yi - (-zd) * zi
-        # shortest-path: flip if scalar part negative
+
         sign = 1.0 if ew >= 0.0 else -1.0
         e_q = sign * np.array([ex, ey, ez])
 
@@ -1503,11 +2061,8 @@ class BlueROV2Controller(ControllerBase):
         relative_states: Array,
         desired_relative_states: Array,
         incidence_signs: Array,
+        p_target_I: Optional[Array] = None,
     ) -> Tuple[Array, dict]:
-        """
-        Command-filtered backstepping with feedback linearization and
-        internally computed passivating term.
-        """
         p_i = np.asarray(p_i, dtype=float).reshape(3)
         q_i = np.asarray(q_i, dtype=float).reshape(4)
         nu_i = np.asarray(nu_i, dtype=float).reshape(6)
@@ -1515,10 +2070,13 @@ class BlueROV2Controller(ControllerBase):
         v_body = nu_i[:3]
         omega_body = nu_i[3:]
 
-        summed_grad, edge_grads, v_des_I = (
+        summed_grad_total, edge_grads, v_des_I, dbg_outer = (
             self.compute_edge_gradients_and_virtual_velocity(
                 relative_states=relative_states,
                 desired_relative_states=desired_relative_states,
+                p_i=p_i,
+                q_i=q_i,
+                p_target_I=p_target_I,
             )
         )
 
@@ -1530,25 +2088,31 @@ class BlueROV2Controller(ControllerBase):
         v_f_b, dv_f_b = self.filtered_reference_in_body_frame(q_i, omega_body)
         e_v_b = v_body - v_f_b
 
-        xi_b, grad_V1_pos_I = self.compute_passivating_term_body(
+        xi_b_edges, grad_V1_pos_I_edges = self.compute_passivating_term_body(
             q_i=q_i,
             edge_gradients=edge_grads,
             incidence_signs=incidence_signs,
         )
 
+        grad_fov_pos_I = dbg_outer.get("grad_fov_pos_I", np.zeros(3))
+        grad_V1_pos_I_total = grad_V1_pos_I_edges + self.cfg.mu_fov_pos * grad_fov_pos_I
+        xi_b_total = R_b2I.T @ grad_V1_pos_I_total
+
         M_v, h_v = self.translational_partition(p_i, q_i, nu_i)
 
-        tau_v_nom = M_v @ dv_f_b + h_v - self.cfg.k_v * e_v_b - xi_b
+        tau_v_nom = M_v @ dv_f_b + h_v - self.cfg.k_v * e_v_b - xi_b_total
         tau_v = self.saturate_translational_force(tau_v_nom)
 
         psi = float(np.linalg.norm(tau_v_nom - tau_v))
         self.set_barrier_activation(psi)
 
         debug = {
-            "summed_grad": summed_grad,
+            "summed_grad_total": summed_grad_total,
             "edge_gradients": edge_grads,
-            "grad_V1_pos_I": grad_V1_pos_I,
-            "xi_b": xi_b,
+            "grad_V1_pos_I_edges": grad_V1_pos_I_edges,
+            "grad_V1_pos_I_total": grad_V1_pos_I_total,
+            "xi_b_edges": xi_b_edges,
+            "xi_b_total": xi_b_total,
             "v_des_I": v_des_I,
             "v_f_I": v_f_I,
             "dv_f_I": dv_f_I,
@@ -1558,6 +2122,7 @@ class BlueROV2Controller(ControllerBase):
             "e_v_b": e_v_b,
             "M_v": M_v,
             "h_v": h_v,
+            **dbg_outer,
         }
         return tau_v, debug
 
@@ -1571,11 +2136,6 @@ class BlueROV2Controller(ControllerBase):
         q_i: Array,
         nu_i: Array,
     ) -> Tuple[float, Array, Array]:
-        """
-        Kinetic inner-loop CLF:
-
-            V = 0.5 * e_v_b^T M_v e_v_b
-        """
         p_i = np.asarray(p_i, dtype=float).reshape(3)
         q_i = np.asarray(q_i, dtype=float).reshape(4)
         nu_i = np.asarray(nu_i, dtype=float).reshape(6)
@@ -1591,6 +2151,269 @@ class BlueROV2Controller(ControllerBase):
         grad_V = M_v @ e_v_b
         return V, grad_V, e_v_b
 
+    def rotational_qp_clf_terms(
+        self,
+        p_i: Array,
+        q_i: Array,
+        nu_i: Array,
+        p_target_I: Optional[Array] = None,
+    ) -> Tuple[float, Array, float, dict]:
+        """
+        Rotational CLF terms for the joint translational-rotational QP.
+
+        When FoV is active the desired angular velocity is
+            omega_des = -k_fov_att * mu_fov_att * grad_att_b
+        and the rotational error e_omega = omega_b - omega_des drives
+            V_rot = 0.5 * e_omega^T M_r e_omega.
+
+        When FoV is inactive e_omega = 0 and V_rot = 0, so the CLF
+        constraint has no rotational component and the QP cost drives
+        tau_omega_qp to zero.
+
+        Returns
+        -------
+        V_rot : float
+        LgV_omega : (3,)  L_{g_omega} V_rot = e_omega
+        LfV_rot : float   L_f V_rot ≈ -e_omega^T h_r
+        dbg_rot : dict
+        """
+        p_i = np.asarray(p_i, dtype=float).reshape(3)
+        q_i = np.asarray(q_i, dtype=float).reshape(4)
+        nu_i = np.asarray(nu_i, dtype=float).reshape(6)
+
+        omega_body = nu_i[3:6]
+        M_r, h_r = self.rotational_partition(p_i, q_i, nu_i)
+
+        if self.cfg.use_fov and (p_target_I is not None):
+            _, grad_att_b, dbg_fov = self.compute_fov_terms(
+                p_i=p_i,
+                q_i=q_i,
+                p_target_I=p_target_I,
+            )
+            pointing_error_b, dbg_pointing = self.fov_pointing_error_body(
+                p_i=p_i,
+                q_i=q_i,
+                p_target_I=p_target_I,
+            )
+            omega_des_nom, omega_des, pointing_error_b_cmd = (
+                self._fov_bounded_angular_rate_command(pointing_error_b)
+            )
+            dbg_rot = {
+                **dbg_fov,
+                **dbg_pointing,
+                "grad_att_b_fov_cmd": grad_att_b,
+                "pointing_error_b_fov_cmd": pointing_error_b_cmd,
+                "omega_des_nom_fov": omega_des_nom,
+                "omega_des_fov": omega_des,
+            }
+        else:
+            omega_des = np.zeros(3)
+            dbg_rot = {
+                "fov_active": False,
+                "grad_att_b_fov_cmd": np.zeros(3),
+                "pointing_error_b_fov_cmd": np.zeros(3),
+                "omega_des_nom_fov": omega_des,
+                "omega_des_fov": omega_des,
+            }
+
+        e_omega = omega_body - omega_des
+        V_rot = 0.5 * float(e_omega @ (M_r @ e_omega))
+        # L_{g_omega} V_rot = M_r^{-T} (M_r e_omega) = e_omega (M_r symmetric)
+        LgV_omega = e_omega.copy()
+        # L_f V_rot ≈ e_omega^T (-h_r), ignoring d/dt omega_des
+        LfV_rot = float(e_omega @ (-h_r))
+        return V_rot, LgV_omega, LfV_rot, dbg_rot
+
+    def clf_qp_wrench(
+        self,
+        p_i: Array,
+        q_i: Array,
+        nu_i: Array,
+        relative_states: Array,
+        desired_relative_states: Array,
+        local_fallback: Optional[Array] = None,
+        incidence_signs: Optional[Array] = None,
+        p_target_I: Optional[Array] = None,
+    ) -> Tuple[Array, Array, dict]:
+        """
+        Joint CLF-QP for translational force tau_v and rotational torque
+        tau_omega_qp.
+
+        Decision variables  z = [tau_v(3), tau_omega(3), delta(1)]
+
+        Cost:
+            min  0.5 z^T diag(P_v, P_v, P_v, P_w, P_w, P_w, w_delta) z
+
+        CLF constraint (combined Lyapunov):
+            [L_gv V | L_gw V | -1] z  <=  -alpha*V - L_f V
+
+        When FoV is active, V = V_trans + V_rot and L_gw V = e_omega ≠ 0,
+        so tau_omega is constrained by the QP.  When FoV is inactive,
+        L_gw V = 0, the cost drives tau_omega_qp to zero, and a separate
+        stabilising torque is added by the caller.
+
+        Returns
+        -------
+        tau_v : (3,)
+        tau_omega_qp : (3,)
+        debug : dict
+        """
+        p_i = np.asarray(p_i, dtype=float).reshape(3)
+        q_i = np.asarray(q_i, dtype=float).reshape(4)
+        nu_i = np.asarray(nu_i, dtype=float).reshape(6)
+
+        # --- Outer loop and virtual velocity (includes FoV translational) ---
+        summed_grad_total, edge_grads, v_des_I, dbg_outer = (
+            self.compute_edge_gradients_and_virtual_velocity(
+                relative_states=relative_states,
+                desired_relative_states=desired_relative_states,
+                p_i=p_i,
+                q_i=q_i,
+                p_target_I=p_target_I,
+            )
+        )
+        self.update_virtual_velocity_filter(v_des_I)
+
+        # --- Translational CLF ---
+        M_v, h_v = self.translational_partition(p_i, q_i, nu_i)
+        V_trans, grad_V_trans, e_v_b = self.translational_tracking_clf_terms(
+            p_i, q_i, nu_i
+        )
+        f_sys_v = -np.linalg.solve(M_v, h_v)
+        LfV_trans = float(grad_V_trans @ f_sys_v)
+        LgV_v = np.linalg.solve(M_v.T, grad_V_trans)  # = e_v_b, shape (3,)
+
+        # --- Rotational CLF (FoV active -> e_omega != 0) ---
+        use_rot_clf = self.cfg.use_fov and (p_target_I is not None)
+        V_rot, LgV_omega, LfV_rot, dbg_rot = self.rotational_qp_clf_terms(
+            p_i, q_i, nu_i, p_target_I
+        )
+
+        # --- Combined ---
+        V_total = V_trans + V_rot
+        LfV_total = LfV_trans + LfV_rot
+        lg_rot = LgV_omega if use_rot_clf else np.zeros(3)
+        lg_row = np.hstack([LgV_v, lg_rot, -1.0])  # shape (7,)
+        rhs = -self._class_k(V_total) - LfV_total
+
+        d_min_eff, d_max_eff = self.current_effective_margins()
+        _fallback_base = {
+            "V_trans": V_trans,
+            "V_rot": V_rot,
+            "LfV_total": LfV_total,
+            "e_v_b": e_v_b,
+            "v_des_I": v_des_I,
+            "edge_gradients": edge_grads,
+            "barrier_activation": 0.0,
+            "d_min_eff": d_min_eff,
+            "d_max_eff": d_max_eff,
+            **dbg_outer,
+            **dbg_rot,
+        }
+
+        if np.linalg.norm(lg_row[:6]) < self.cfg.lgv_epsilon:
+            tau_v = (
+                np.zeros(3)
+                if local_fallback is None
+                else np.asarray(local_fallback, dtype=float).reshape(3)
+            )
+            tau_v = self.saturate_translational_force(tau_v)
+            self.set_barrier_activation(0.0)
+            return (
+                tau_v,
+                np.zeros(3),
+                {
+                    "mode": "fallback",
+                    "reason": "small_LgV",
+                    **_fallback_base,
+                },
+            )
+
+        P = np.diag(
+            [
+                self.cfg.clf_force_weight,
+                self.cfg.clf_force_weight,
+                self.cfg.clf_force_weight,
+                self.cfg.clf_torque_weight,
+                self.cfg.clf_torque_weight,
+                self.cfg.clf_torque_weight,
+                self.cfg.clf_slack_weight,
+            ]
+        )
+        q_obj = np.zeros(7)
+
+        G_con = lg_row.reshape(1, 7)
+        h_con = np.array([rhs])
+
+        if self.cfg.tau_v_max is None:
+            lb_v = np.full(3, -np.inf)
+            ub_v = np.full(3, np.inf)
+        else:
+            lb_v = np.full(3, -self.cfg.tau_v_max)
+            ub_v = np.full(3, self.cfg.tau_v_max)
+
+        lb = np.hstack([lb_v, np.full(3, -np.inf), 0.0])
+        ub = np.hstack([ub_v, np.full(3, np.inf), np.inf])
+
+        sol = solve_qp(
+            P=sparse.csc_matrix(P),
+            q=q_obj,
+            G=sparse.csc_matrix(G_con),
+            h=h_con,
+            lb=lb,
+            ub=ub,
+            solver="osqp",
+        )
+
+        if sol is None:
+            tau_v = (
+                np.zeros(3)
+                if local_fallback is None
+                else np.asarray(local_fallback, dtype=float).reshape(3)
+            )
+            tau_v = self.saturate_translational_force(tau_v)
+            self.set_barrier_activation(0.0)
+            return (
+                tau_v,
+                np.zeros(3),
+                {
+                    "mode": "fallback",
+                    "reason": "qp_failed",
+                    **_fallback_base,
+                },
+            )
+
+        tau_v = sol[:3]
+        tau_omega_qp = sol[3:6]
+        delta = float(sol[6])
+
+        psi = max(delta, 0.0)
+        self.set_barrier_activation(psi)
+        d_min_eff, d_max_eff = self.current_effective_margins()
+
+        return (
+            tau_v,
+            tau_omega_qp,
+            {
+                "mode": "qp",
+                "delta": delta,
+                "V_trans": V_trans,
+                "V_rot": V_rot,
+                "V_total": V_total,
+                "LfV_total": LfV_total,
+                "LgV_v": LgV_v,
+                "LgV_omega": LgV_omega,
+                "e_v_b": e_v_b,
+                "v_des_I": v_des_I,
+                "edge_gradients": edge_grads,
+                "barrier_activation": psi,
+                "d_min_eff": d_min_eff,
+                "d_max_eff": d_max_eff,
+                **dbg_outer,
+                **dbg_rot,
+            },
+        )
+
     def clf_qp_translational_force(
         self,
         p_i: Array,
@@ -1601,43 +2424,23 @@ class BlueROV2Controller(ControllerBase):
         local_fallback: Optional[Array] = None,
         include_position_gradient_term: bool = False,
         incidence_signs: Optional[Array] = None,
+        p_target_I: Optional[Array] = None,
     ) -> Tuple[Array, dict]:
-        """
-        CLF-QP over translational generalized force.
-
-        By default uses the inner-loop kinetic CLF only.
-        Optionally adds the position-gradient contribution from V1_i
-        in a simple implementation-oriented way.
-
-        Adaptive-barrier note
-        ---------------------
-        The adaptive barrier-domain states are updated indirectly through
-        `compute_edge_gradients_and_virtual_velocity(...)`, because that calls
-        `edge_gradients(...)`. The activation signal used for the NEXT update
-        is stored at the end of this function:
-        - if the QP succeeds, the slack variable is used;
-        - if the QP fails or LgV is too small, the activation is set to zero.
-        """
         p_i = np.asarray(p_i, dtype=float).reshape(3)
         q_i = np.asarray(q_i, dtype=float).reshape(4)
         nu_i = np.asarray(nu_i, dtype=float).reshape(6)
 
-        # --------------------------------------------------------
-        # Outer-loop virtual velocity and edge gradients
-        # Note: this also updates the adaptive barrier-domain states
-        # using the activation stored from the previous control step.
-        # --------------------------------------------------------
-        summed_grad, edge_grads, v_des_I = (
+        summed_grad_total, edge_grads, v_des_I, dbg_outer = (
             self.compute_edge_gradients_and_virtual_velocity(
                 relative_states=relative_states,
                 desired_relative_states=desired_relative_states,
+                p_i=p_i,
+                q_i=q_i,
+                p_target_I=p_target_I,
             )
         )
         self.update_virtual_velocity_filter(v_des_I)
 
-        # --------------------------------------------------------
-        # Inner-loop translational CLF quantities
-        # --------------------------------------------------------
         M_v, h_v = self.translational_partition(p_i, q_i, nu_i)
         V, grad_V, e_v_b = self.translational_tracking_clf_terms(p_i, q_i, nu_i)
 
@@ -1653,16 +2456,18 @@ class BlueROV2Controller(ControllerBase):
                     "incidence_signs must be provided when "
                     "include_position_gradient_term=True."
                 )
-            _, grad_V1_pos_I = self.compute_passivating_term_body(
+            _, grad_V1_pos_I_edges = self.compute_passivating_term_body(
                 q_i=q_i,
                 edge_gradients=edge_grads,
                 incidence_signs=incidence_signs,
             )
-            extra_info["grad_V1_pos_I"] = grad_V1_pos_I
+            grad_fov_pos_I = dbg_outer.get("grad_fov_pos_I", np.zeros(3))
+            grad_V1_pos_I_total = (
+                grad_V1_pos_I_edges + self.cfg.mu_fov_pos * grad_fov_pos_I
+            )
+            extra_info["grad_V1_pos_I_edges"] = grad_V1_pos_I_edges
+            extra_info["grad_V1_pos_I_total"] = grad_V1_pos_I_total
 
-        # --------------------------------------------------------
-        # Fallback if the control direction is too weak
-        # --------------------------------------------------------
         if np.linalg.norm(LgV) < self.cfg.lgv_epsilon:
             tau_v = (
                 np.zeros(3)
@@ -1688,17 +2493,10 @@ class BlueROV2Controller(ControllerBase):
                 "barrier_activation": psi,
                 "d_min_eff": d_min_eff,
                 "d_max_eff": d_max_eff,
+                **dbg_outer,
                 **extra_info,
             }
 
-        # --------------------------------------------------------
-        # Build CLF-QP
-        #
-        # minimize    0.5 * tau_v^T W tau_v + 0.5 * p * delta^2
-        # subject to  LfV + LgV tau_v <= -alpha(V) + delta
-        #             tau bounds
-        #             delta >= 0
-        # --------------------------------------------------------
         P = np.diag(
             [
                 self.cfg.clf_force_weight,
@@ -1734,9 +2532,6 @@ class BlueROV2Controller(ControllerBase):
             solver="osqp",
         )
 
-        # --------------------------------------------------------
-        # Fallback if QP solver fails
-        # --------------------------------------------------------
         if sol is None:
             tau_v = (
                 np.zeros(3)
@@ -1762,14 +2557,10 @@ class BlueROV2Controller(ControllerBase):
                 "barrier_activation": psi,
                 "d_min_eff": d_min_eff,
                 "d_max_eff": d_max_eff,
+                **dbg_outer,
                 **extra_info,
             }
 
-        # --------------------------------------------------------
-        # Successful QP solve
-        # Use the slack as the activation signal for the adaptive
-        # barrier-domain dynamics at the NEXT control step.
-        # --------------------------------------------------------
         tau_v = sol[:3]
         delta_slack = float(sol[3])
 
@@ -1790,6 +2581,7 @@ class BlueROV2Controller(ControllerBase):
             "barrier_activation": psi,
             "d_min_eff": d_min_eff,
             "d_max_eff": d_max_eff,
+            **dbg_outer,
             **extra_info,
         }
 
@@ -1806,6 +2598,7 @@ class BlueROV2Controller(ControllerBase):
         desired_relative_states: Array,
         f_min: Array,
         f_max: Array,
+        p_target_I: Optional[Array] = None,
     ) -> Tuple[Array, dict]:
         p_i = np.asarray(p_i, dtype=float).reshape(3)
         q_i = np.asarray(q_i, dtype=float).reshape(4)
@@ -1813,10 +2606,13 @@ class BlueROV2Controller(ControllerBase):
         f_min = np.asarray(f_min, dtype=float).reshape(-1)
         f_max = np.asarray(f_max, dtype=float).reshape(-1)
 
-        summed_grad, edge_grads, v_des_I = (
+        summed_grad_total, edge_grads, v_des_I, dbg_outer = (
             self.compute_edge_gradients_and_virtual_velocity(
                 relative_states=relative_states,
                 desired_relative_states=desired_relative_states,
+                p_i=p_i,
+                q_i=q_i,
+                p_target_I=p_target_I,
             )
         )
         self.update_virtual_velocity_filter(v_des_I)
@@ -1841,9 +2637,10 @@ class BlueROV2Controller(ControllerBase):
                 "LfV": LfV,
                 "LgV_f": LgV_f,
                 "v_des_I": v_des_I,
-                "summed_grad": summed_grad,
+                "summed_grad_total": summed_grad_total,
                 "edge_gradients": edge_grads,
                 "e_v_b": e_v_b,
+                **dbg_outer,
             }
 
         m = B.shape[1]
@@ -1876,9 +2673,10 @@ class BlueROV2Controller(ControllerBase):
                 "LfV": LfV,
                 "LgV_f": LgV_f,
                 "v_des_I": v_des_I,
-                "summed_grad": summed_grad,
+                "summed_grad_total": summed_grad_total,
                 "edge_gradients": edge_grads,
                 "e_v_b": e_v_b,
+                **dbg_outer,
             }
 
         f_star = sol[:m]
@@ -1889,9 +2687,10 @@ class BlueROV2Controller(ControllerBase):
             "LfV": LfV,
             "LgV_f": LgV_f,
             "v_des_I": v_des_I,
-            "summed_grad": summed_grad,
+            "summed_grad_total": summed_grad_total,
             "edge_gradients": edge_grads,
             "e_v_b": e_v_b,
+            **dbg_outer,
         }
 
     # ============================================================
@@ -1922,19 +2721,38 @@ class BlueROV2Controller(ControllerBase):
         local_fallback_tau_v: Optional[Array] = None,
         f_min: Optional[Array] = None,
         f_max: Optional[Array] = None,
+        p_target_I: Optional[Array] = None,
+        use_fov_torque: bool = True,
     ) -> Tuple[Array, dict]:
         """
         Parameters
         ----------
         incidence_signs : np.ndarray, shape (n_edges,)
             Values [E]_{ik} for the edges involving agent i.
-            Needed for the passivating term.
+        p_target_I : np.ndarray | None, shape (3,)
+            Inertial-frame position of the target that should remain in view.
+        use_fov_torque : bool
+            If True and tau_omega is None, generate the rotational torque
+            from the FoV barrier.
         """
-        tau_omega = (
-            np.zeros(3)
-            if tau_omega is None
-            else np.asarray(tau_omega, dtype=float).reshape(3)
-        )
+        p_i = np.asarray(p_i, dtype=float).reshape(3)
+        q_i = np.asarray(q_i, dtype=float).reshape(4)
+        nu_i = np.asarray(nu_i, dtype=float).reshape(6)
+
+        if tau_omega is None:
+            if self.cfg.use_fov and use_fov_torque and (p_target_I is not None):
+                tau_omega_cmd, dbg_fov_tau = self.fov_attitude_torque(
+                    p_i=p_i,
+                    q_i=q_i,
+                    nu_i=nu_i,
+                    p_target_I=p_target_I,
+                )
+            else:
+                tau_omega_cmd = np.zeros(3)
+                dbg_fov_tau = {"fov_active": False}
+        else:
+            tau_omega_cmd = np.asarray(tau_omega, dtype=float).reshape(3)
+            dbg_fov_tau = {"fov_active": self.cfg.use_fov and (p_target_I is not None)}
 
         if mode == "feedback_linearization":
             tau_v, debug = self.feedback_linearization_translational_force(
@@ -1944,26 +2762,49 @@ class BlueROV2Controller(ControllerBase):
                 relative_states=relative_states,
                 desired_relative_states=desired_relative_states,
                 incidence_signs=incidence_signs,
+                p_target_I=p_target_I,
             )
-            tau = np.hstack([tau_v, tau_omega])
+            tau = np.hstack([tau_v, tau_omega_cmd])
+            tau[3:6] = self.saturate_rotational_torque_components(tau[3:6])
             debug["mode"] = mode
             debug["tau"] = tau
+            debug["tau_omega_cmd"] = tau[3:6].copy()
+            debug["p_target_I"] = p_target_I
+            debug.update(dbg_fov_tau)
             return tau, debug
 
         if mode == "clf_qp_tau":
-            tau_v, debug = self.clf_qp_translational_force(
+            tau_v, tau_omega_qp, debug = self.clf_qp_wrench(
                 p_i=p_i,
                 q_i=q_i,
                 nu_i=nu_i,
                 relative_states=relative_states,
                 desired_relative_states=desired_relative_states,
                 local_fallback=local_fallback_tau_v,
-                include_position_gradient_term=False,
                 incidence_signs=incidence_signs,
+                p_target_I=p_target_I,
             )
-            tau = np.hstack([tau_v, tau_omega])
+            # Add caller-supplied stabilisation torque on top of QP result.
+            # When FoV is inactive the QP drives tau_omega_qp to zero via cost,
+            # and tau_omega_cmd provides full attitude stabilisation.
+            # When FoV is active tau_omega_qp satisfies the combined CLF and
+            # tau_omega_cmd provides additional damping/stabilisation.
+            tau_omega_stab = (
+                np.asarray(tau_omega, dtype=float).reshape(3)
+                if tau_omega is not None
+                else np.zeros(3)
+            )
+            tau_omega_total = tau_omega_qp + tau_omega_stab
+            tau_omega_total = self.saturate_rotational_torque_components(
+                tau_omega_total
+            )
+            tau = np.hstack([tau_v, tau_omega_total])
             debug["mode"] = mode
             debug["tau"] = tau
+            debug["tau_omega_qp"] = tau_omega_qp
+            debug["tau_omega_stab"] = tau_omega_stab
+            debug["tau_omega_total"] = tau_omega_total
+            debug["p_target_I"] = p_target_I
             return tau, debug
 
         if mode == "clf_qp_thrusters":
@@ -1979,9 +2820,13 @@ class BlueROV2Controller(ControllerBase):
                 desired_relative_states=desired_relative_states,
                 f_min=f_min,
                 f_max=f_max,
+                p_target_I=p_target_I,
             )
             debug["mode"] = mode
             debug["f"] = f_star
+            debug["tau_omega_cmd"] = tau_omega_cmd
+            debug["p_target_I"] = p_target_I
+            debug.update(dbg_fov_tau)
             return f_star, debug
 
         raise ValueError(f"Unknown mode '{mode}'.")

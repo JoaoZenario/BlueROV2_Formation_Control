@@ -5,7 +5,6 @@ from __future__ import annotations
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation, PillowWriter
-from matplotlib.gridspec import GridSpecFromSubplotSpec
 
 from graphs_utils import plot_graph_from_adjacency
 
@@ -30,6 +29,7 @@ class Animation:
 
         self._build_workspace_figure()
         self._build_telemetry_figure()
+        self._build_force_torque_figure()
 
     # ============================================================
     # figure builders
@@ -115,16 +115,20 @@ class Animation:
         self.has_fov = has_fov
 
         content_rows = 3 if has_fov else 2
-        total_rows = content_rows + 1
         self.fig_telemetry = plt.figure(
-            "System Telemetry", figsize=(13, 4 * total_rows)
+            "System Telemetry", figsize=(13, 4 * content_rows)
         )
-        gs = self.fig_telemetry.add_gridspec(total_rows, 2, hspace=0.4, wspace=0.3)
+        gs = self.fig_telemetry.add_gridspec(content_rows, 2, hspace=0.4, wspace=0.3)
 
         self.ax_dist = self.fig_telemetry.add_subplot(gs[0, 0])
         self.ax_err = self.fig_telemetry.add_subplot(gs[0, 1])
         self.ax_vel = self.fig_telemetry.add_subplot(gs[1, 0])
         self.ax_acc = self.fig_telemetry.add_subplot(gs[1, 1])
+
+        self.ax_dist.grid(True, ls="--", alpha=0.5)
+        self.ax_err.grid(True, ls="--", alpha=0.5)
+        self.ax_vel.grid(True, ls="--", alpha=0.5)
+        self.ax_acc.grid(True, ls="--", alpha=0.5)
 
         self.ax_dist.set_title("Inter-Agent Distances")
         self.ax_err.set_title("Formation Error (m)")
@@ -186,6 +190,9 @@ class Animation:
             self.ax_fov_x = self.fig_telemetry.add_subplot(gs[2, 0])
             self.ax_fov_y = self.fig_telemetry.add_subplot(gs[2, 1])
 
+            self.ax_fov_x.grid(True, ls="--", alpha=0.5)
+            self.ax_fov_y.grid(True, ls="--", alpha=0.5)
+
             self.ax_fov_x.set_title("Horizontal FOV Error (deg)")
             self.ax_fov_y.set_title("Vertical FOV Error (deg)")
             self.ax_fov_x.set_xlabel("Time (s)")
@@ -218,65 +225,76 @@ class Animation:
                     )[0]
                 )
 
-        # ---- applied force / command panels (component-wise, bottom row) ----
-        force_row = content_rows
-        mode = self.cfg.simulation_mode
+        self.ax_dist.legend(loc="upper right", fontsize="xx-small", ncol=2)
+        self.ax_vel.legend(loc="upper right", fontsize="xx-small", ncol=2)
+        self.ax_acc.legend(loc="upper right", fontsize="xx-small", ncol=2)
+        self.ax_err.legend(loc="upper right", fontsize="xx-small", ncol=2)
 
-        if mode == "bluerov_clf_qp_thrusters":
-            # One panel: all per-thruster forces (8) per agent
-            n_force_panels = 1
-            force_comp_slices = None  # signal: thruster mode
+    def _build_force_torque_figure(self):
+        """Separate figure for applied forces and torques (or thruster forces / cmd)."""
+        mode = self.cfg.simulation_mode
+        is_bluerov = mode.startswith("bluerov")
+        is_thruster = mode == "bluerov_clf_qp_thrusters"
+
+        if is_thruster:
+            n_rows, n_cols = 1, 1
+            fig_h = 4
+        elif is_bluerov:
+            n_rows, n_cols = 2, 3  # row 0: forces, row 1: torques
+            fig_h = 8
+        else:
+            n_rows, n_cols = 1, 3
+            fig_h = 4
+
+        self.fig_force_torque = plt.figure("Forces & Torques", figsize=(14, fig_h))
+        gs_ft = self.fig_force_torque.add_gridspec(
+            n_rows, n_cols, hspace=0.4, wspace=0.3
+        )
+
+        # ---- Force panels (row 0) ----
+        if is_thruster:
             force_limit = self.cfg.thruster_limit
             force_limit_label = "±thruster_limit"
-            comp_labels = [f"f{k+1}" for k in range(8)]
-            panel_titles = ["Per-Thruster Forces (N)"]
+            force_titles = ["Per-Thruster Forces (N)"]
             force_ylabel = "Force (N)"
-        else:
-            # Three panels: x, y, z components of the first 3 control outputs
-            n_force_panels = 3
-            force_comp_slices = [0, 1, 2]
-            if mode == "single_integrator":
-                lbl = "Vel cmd"
-                force_ylabel = "m/s"
-                force_limit = self.cfg.v_max
-                force_limit_label = "v_max (norm)"
-            elif mode == "double_integrator":
-                lbl = "Accel cmd"
-                force_ylabel = "m/s²"
-                force_limit = self.cfg.a_max
-                force_limit_label = "a_max (norm)"
-            elif mode == "bluerov_clf_qp_tau":
-                lbl = "τ_v"
-                force_ylabel = "Force (N)"
-                force_limit = self.cfg.tau_v_max
-                force_limit_label = "±tau_v_max"
-            else:
-                lbl = "τ"
-                force_ylabel = "Force (N)"
-                force_limit = None
-                force_limit_label = None
-            comp_labels = ["x", "y", "z"]
-            panel_titles = [f"{lbl}_{c}" for c in comp_labels]
+            self._force_comp_slices = None  # thruster mode sentinel
+            n_force_comp = 8
+        elif is_bluerov:
+            force_limit = self.cfg.tau_v_max
+            force_limit_label = "±tau_v_max" if force_limit is not None else None
+            force_titles = ["$f_x$ (N)", "$f_y$ (N)", "$f_z$ (N)"]
+            force_ylabel = "Force (N)"
+            self._force_comp_slices = [0, 1, 2]
+            n_force_comp = 3
+        elif mode == "single_integrator":
+            force_limit = self.cfg.v_max
+            force_limit_label = "v_max"
+            force_titles = ["$v_x$ (m/s)", "$v_y$ (m/s)", "$v_z$ (m/s)"]
+            force_ylabel = "m/s"
+            self._force_comp_slices = [0, 1, 2]
+            n_force_comp = 3
+        else:  # double_integrator
+            force_limit = self.cfg.a_max
+            force_limit_label = "a_max"
+            force_titles = ["$a_x$ (m/s²)", "$a_y$ (m/s²)", "$a_z$ (m/s²)"]
+            force_ylabel = "m/s²"
+            self._force_comp_slices = [0, 1, 2]
+            n_force_comp = 3
 
         self._force_limit = force_limit
-        self._force_comp_slices = force_comp_slices
 
-        force_gs = GridSpecFromSubplotSpec(
-            1,
-            n_force_panels,
-            subplot_spec=gs[force_row, :],
-            wspace=0.3,
-        )
-        self.ax_force_panels = [
-            self.fig_telemetry.add_subplot(force_gs[0, k])
-            for k in range(n_force_panels)
-        ]
+        self.ax_force_panels = []
+        for k in range(n_cols if not is_thruster else 1):
+            ax = self.fig_force_torque.add_subplot(gs_ft[0, k])
+            ax.grid(True, ls="--", alpha=0.5)
+            ax.set_title(force_titles[k] if not is_thruster else force_titles[0])
+            ax.set_xlabel("Time (s)")
+            ax.set_ylabel(force_ylabel)
+            self.ax_force_panels.append(ax)
+
         self.force_limit_pos_lines = []
         self.force_limit_neg_lines = []
         for k, ax in enumerate(self.ax_force_panels):
-            ax.set_title(panel_titles[k])
-            ax.set_xlabel("Time (s)")
-            ax.set_ylabel(force_ylabel)
             if force_limit is not None:
                 self.force_limit_pos_lines.append(
                     ax.plot(
@@ -295,13 +313,11 @@ class Animation:
                 self.force_limit_pos_lines.append(None)
                 self.force_limit_neg_lines.append(None)
 
-        # Create force_lines: flat list indexed [panel_idx * N + agent]
-        # or for thrusters [thruster * N + agent]
         self.force_lines = []
         linestyles = ["-", "--", "-.", ":", (0, (3, 1, 1, 1))]
-        if force_comp_slices is None:
-            # Thruster mode: all 8 thruster forces on the single panel
-            for k in range(8):
+        if self._force_comp_slices is None:
+            # Thruster mode
+            for k in range(n_force_comp):
                 for i in range(self.N):
                     ls = linestyles[i % len(linestyles)]
                     self.force_lines.append(
@@ -312,11 +328,10 @@ class Animation:
                             color=self.colors[i],
                             lw=1.0,
                             alpha=0.8,
-                            label=f"A{i} {comp_labels[k]}" if i == 0 else None,
+                            label=f"A{i} f{k+1}" if i == 0 else None,
                         )[0]
                     )
         else:
-            # 3-component mode: one line per agent per panel
             for k in range(3):
                 for i in range(self.N):
                     self.force_lines.append(
@@ -329,13 +344,29 @@ class Animation:
                         )[0]
                     )
 
-        for k, ax in enumerate(self.ax_force_panels):
+        for ax in self.ax_force_panels:
             ax.legend(loc="upper right", fontsize="xx-small", ncol=2)
 
-        self.ax_dist.legend(loc="upper right", fontsize="xx-small", ncol=2)
-        self.ax_vel.legend(loc="upper right", fontsize="xx-small", ncol=2)
-        self.ax_acc.legend(loc="upper right", fontsize="xx-small", ncol=2)
-        self.ax_err.legend(loc="upper right", fontsize="xx-small", ncol=2)
+        # ---- Torque panels (row 1, bluerov non-thruster only) ----
+        self.ax_torque_panels = []
+        self.torque_lines = []
+        if is_bluerov and not is_thruster:
+            torque_titles = ["$\\tau_x$ (N·m)", "$\\tau_y$ (N·m)", "$\\tau_z$ (N·m)"]
+            for k in range(3):
+                ax = self.fig_force_torque.add_subplot(gs_ft[1, k])
+                ax.grid(True, ls="--", alpha=0.5)
+                ax.set_title(torque_titles[k])
+                ax.set_xlabel("Time (s)")
+                ax.set_ylabel("Torque (N·m)")
+                self.ax_torque_panels.append(ax)
+                for i in range(self.N):
+                    self.torque_lines.append(
+                        ax.plot(
+                            [], [], color=self.colors[i], lw=1.2, label=f"Agent {i}"
+                        )[0]
+                    )
+            for ax in self.ax_torque_panels:
+                ax.legend(loc="upper right", fontsize="xx-small", ncol=2)
 
     # ============================================================
     # helpers
@@ -614,6 +645,13 @@ class Animation:
                         line = self.force_lines[k * self.N + i]
                         if u_hist.shape[-1] > k:
                             self._safe_set_data(line, t, u_hist[:, i, k])
+                # Torque panels (components 3,4,5 — BlueROV2 non-thruster)
+                for k in range(len(self.ax_torque_panels)):
+                    comp = 3 + k
+                    for i in range(self.N):
+                        line = self.torque_lines[k * self.N + i]
+                        if u_hist.shape[-1] > comp:
+                            self._safe_set_data(line, t, u_hist[:, i, comp])
 
         for k, _ax in enumerate(self.ax_force_panels):
             line_p = self.force_limit_pos_lines[k]
@@ -650,6 +688,8 @@ class Animation:
         self.ax_acc.set_xlim(0, T)
         self.ax_err.set_xlim(0, T)
         for ax in self.ax_force_panels:
+            ax.set_xlim(0, T)
+        for ax in self.ax_torque_panels:
             ax.set_xlim(0, T)
 
         if frame >= 0:
@@ -715,6 +755,15 @@ class Animation:
                                 np.max(np.abs(fvals)) * 1.1 if fvals.size else 0.1,
                                 (lim_ref * 1.2 if lim_ref is not None else 0.1),
                                 0.1,
+                            )
+                            ax.set_ylim(-y_top, y_top)
+                    # Torque panels auto-scale
+                    for k, ax in enumerate(self.ax_torque_panels):
+                        comp = 3 + k
+                        if u_hist.shape[-1] > comp:
+                            tvals = u_hist[:, :, comp]
+                            y_top = max(
+                                np.max(np.abs(tvals)) * 1.1 if tvals.size else 0.1, 0.1
                             )
                             ax.set_ylim(-y_top, y_top)
 
@@ -962,6 +1011,9 @@ class Animation:
             )
             self.fig_telemetry.savefig(
                 f"{save_prefix}_telemetry.png", dpi=200, bbox_inches="tight"
+            )
+            self.fig_force_torque.savefig(
+                f"{save_prefix}_force_torque.png", dpi=200, bbox_inches="tight"
             )
 
         if show_topology:

@@ -22,83 +22,232 @@ from graphs_utils import (
 
 @dataclass
 class SimulationConfig:
-    """User-selected simulation settings."""
+    """User-selected simulation settings.
 
+    Parameters are grouped by topic. CLI equivalents are exposed in
+    Parameters.function_arguments(); programmatic overrides are passed as
+    keyword arguments to Parameters().
+    """
+
+    # ------------------------------------------------------------------
+    # Swarm topology
+    # ------------------------------------------------------------------
     N: int = 5
+    """Number of agents (including the leader at index 0)."""
     dim: int = 3
+    """Spatial dimension: 2 or 3."""
     mode_graph: int = 1
-    conn: bool = True
-    coll: bool = True
-    fov: bool = True
-    rec: bool = True
+    """Graph type: 0 = undirected, 1 = directed rooted spanning tree."""
     mode_dynamics: int = 1
+    """Legacy dynamics selector passed to graph utilities (0 = SI, 1 = DI)."""
+    tree_type: str = "leader_star"
+    """Directed tree topology: 'leader_star', 'leader_chain', or 'random_tree'."""
 
+    # ------------------------------------------------------------------
+    # Active constraint flags
+    # ------------------------------------------------------------------
+    conn: bool = True
+    """Enable connectivity-maintenance CBF (upper distance bound)."""
+    coll: bool = True
+    """Enable collision-avoidance CBF (lower distance bound)."""
+    fov: bool = True
+    """Enable field-of-view CBF (pyramidal camera frustum)."""
+    rec: bool = True
+    """Use recentered (smooth) barrier functions."""
+
+    # ------------------------------------------------------------------
+    # Time stepping
+    # ------------------------------------------------------------------
     dt: float = 0.01
+    """Simulation time step [s]."""
     steps: int = 3000
+    """Total number of simulation steps."""
 
-    c1: float = 1.0
-    c2: float = 1.0
-    c3: float = 1.0
-    c4_h: float = 0.5
-    c4_v: float = 0.5
-
-    wn: float = 10.0
-    zeta: float = 1.0
-    lam: float = 5.0
-
-    v_max: float = 1.0
-    a_max: float = 1.0
-    d_max: float = 5.0
-    d_min: float = 0.5
-    r_max: float = 1.5
-
-    R: float = 2.0
-    l: float = 7.0
-
-    kp_yaw: float = 2.0
-    kp_pitch: float = 1.0
-    theta_max_x: float = float(np.radians(45))
-    theta_max_y: float = float(np.radians(30))
-
-    # Simulation modes: "single_integrator", "double_integrator", "bluerov_feedback_linearization", "bluerov_clf_qp_tau", "bluerov_clf_qp_thrusters"
-    simulation_mode: str = "bluerov_clf_qp_tau"
-    filter_type: str = "second_order"
+    # ------------------------------------------------------------------
+    # Controller / simulation mode
+    # ------------------------------------------------------------------
+    simulation_mode: str = "bluerov_feedback_linearization"
+    """Controller backend:
+      'single_integrator'              – first-order SI
+      'double_integrator'              – second-order DI
+      'bluerov_feedback_linearization' – feedback-linearised BlueROV2
+      'bluerov_clf_qp_tau'             – CLF-QP wrench (force + torque) output
+      'bluerov_clf_qp_thrusters'       – CLF-QP direct thruster allocation
+    """
     use_quaternions: bool = True
+    """Represent orientation as unit quaternions (True) or Euler angles (False)."""
 
-    tau_v_max: float | None = 20.0
-    clf_alpha: float = 0.1
-    clf_alpha_sat: float = 0.5
-    clf_slack_weight: float = 1000.0
-    clf_force_weight: float = 1.0
-    thrust_weight: float = 1.0
-    lgv_epsilon: float = 1e-6
-    saturation_mode: str = "smooth"
-    saturation_switch_ratio: float = 4.0
-    thruster_limit: float = 40.0
+    # ------------------------------------------------------------------
+    # Formation control gains
+    # c1: outer-loop virtual velocity gain
+    # c2: inner-loop tracking gain
+    # c3: velocity error damping gain
+    # c4_h/c4_v: FoV barrier weight (horizontal / vertical channel)
+    # k_form: scalar multiplier applied to the formation gradient
+    # ------------------------------------------------------------------
+    c1: float = 1.0
+    """Outer-loop (virtual velocity) gain."""
+    c2: float = 1.0
+    """Inner-loop (velocity tracking) gain."""
+    c3: float = 1.0
+    """Velocity error damping gain."""
+    c4_h: float = 0.5
+    """FoV barrier weight for the horizontal camera channel."""
+    c4_v: float = 0.5
+    """FoV barrier weight for the vertical camera channel."""
     k_form: float = 1.0
+    """Global scalar multiplier on the formation gradient."""
+
+    # ------------------------------------------------------------------
+    # Command filter (inner-loop reference model)
+    # ------------------------------------------------------------------
+    filter_type: str = "second_order"
+    """Filter type: 'first_order' (bandwidth lam) or 'second_order' (wn, zeta)."""
+    wn: float = 10.0
+    """Natural frequency of the second-order command filter [rad/s]."""
+    zeta: float = 1.0
+    """Damping ratio of the second-order command filter (1 = critically damped)."""
+    lam: float = 5.0
+    """Bandwidth of the first-order command filter [rad/s]."""
+
+    # ------------------------------------------------------------------
+    # Velocity and force limits
+    # ------------------------------------------------------------------
+    v_max: float = 1.0
+    """Maximum admissible translational speed [m/s]."""
+    a_max: float = 1.0
+    """Maximum admissible translational acceleration [m/s²]."""
+    tau_v_max: float | None = 20.0
+    """Maximum translational generalised force norm [N]; None = unconstrained."""
+    r_max: float = 0.5
+    """Maximum admissible angular rate [rad/s] (used by SI/DI modes)."""
+
+    # ------------------------------------------------------------------
+    # Inter-agent distance constraints
+    # ------------------------------------------------------------------
+    d_min: float = 0.5
+    """Collision-avoidance lower bound on inter-agent distance [m]."""
+    d_max: float = 5.0
+    """Connectivity upper bound on inter-agent distance [m]."""
+
+    # ------------------------------------------------------------------
+    # Attitude stabilisation gains (used in the BlueROV2 when no FoV control is active)
+    # ------------------------------------------------------------------
     k_att: float = 5.0
+    """Proportional gain for attitude stabilisation."""
     k_att_d: float = 2.0
+    """Derivative (damping) gain for attitude stabilisation."""
+    kp_yaw: float = 2.0
+    """Proportional gain for yaw error in the FoV attitude controller."""
+    kp_pitch: float = 1.0
+    """Proportional gain for pitch error in the FoV attitude controller."""
 
+    # ------------------------------------------------------------------
+    # Field-of-view (FoV) controller
+    # ------------------------------------------------------------------
+    theta_max_x: float = float(np.radians(45))
+    """Half-angle of the horizontal FoV cone [rad]."""
+    theta_max_y: float = float(np.radians(30))
+    """Half-angle of the vertical FoV cone [rad]."""
+    alpha_h_des: float = 0.0
+    """Desired normalised horizontal camera coordinate (0 = centred); |α| < 1."""
+    alpha_v_des: float = 0.0
+    """Desired normalised vertical camera coordinate (0 = centred); |α| < 1."""
+    fov_eps: float = 1e-6
+    """Numerical regularisation added inside the FoV barrier log terms."""
+    k_fov_omega: float = 0.10
+    """Backstepping gain: maps FoV attitude gradient to desired angular rate."""
+    k_fov_backstep: float = 0.10
+    """Backstepping gain: penalises angular-rate tracking error."""
+    omega_fov_max: float = 0.10
+    """Component-wise saturation applied to the desired angular rate [rad/s]."""
+    fov_R_cb: np.ndarray | None = None
+    """Rotation matrix from camera frame to body frame (3×3). None → eye(3)."""
+    fov_p_cb: np.ndarray | None = None
+    """Translation from camera origin to body origin in body frame [m]. None → zeros(3)."""
+
+    # ------------------------------------------------------------------
+    # CLF-QP (bluerov_clf_qp_tau mode)
+    # ------------------------------------------------------------------
+    clf_alpha: float = 0.1
+    """Class-K decay rate α for the CLF constraint: V̇ ≤ -α·V + δ."""
+    clf_alpha_sat: float = 0.5
+    """Saturation ceiling for the class-K function; set None for pure linear."""
+    clf_slack_weight: float = 1000.0
+    """Penalty weight on the CLF slack variable δ (large → hard CLF constraint)."""
+    clf_force_weight: float = 1.0
+    """Regularisation weight on translational forces in the CLF-QP cost."""
+    clf_torque_weight: float = 10.0
+    """Regularisation weight on torques in the CLF-QP cost.
+    High value → QP drives τ_ω ≈ 0 when FoV is inactive."""
+    lgv_epsilon: float = 1e-6
+    """Minimum LgV norm below which the CLF constraint is skipped (numerical safety)."""
+    saturation_mode: str = "smooth"
+    """Force saturation strategy: 'hard', 'smooth', or 'hybrid'."""
+    saturation_switch_ratio: float = 4.0
+    """Ratio τ_max/τ_nom at which the hybrid saturation mode switches [> 1]."""
+
+    # ------------------------------------------------------------------
+    # Thruster allocation (bluerov_clf_qp_thrusters mode)
+    # ------------------------------------------------------------------
+    thrust_weight: float = 1.0
+    """Regularisation weight on individual thruster forces in the allocation QP."""
+    thruster_limit: float = 40.0
+    """Per-thruster force saturation limit [N]."""
+
+    # ------------------------------------------------------------------
+    # Adaptive barrier-domain relaxation
+    # ------------------------------------------------------------------
     use_adaptive_barrier: bool = False
+    """Enable time-varying relaxation of the CBF safety margins."""
     lambda_delta: float = 2.0
+    """Decay rate of the lower-margin relaxation σ_δ."""
     gamma_delta: float = 1.0
+    """Activation gain for the lower-margin relaxation dynamics."""
     sigma_delta_max: float = 0.15
+    """Maximum allowed lower-margin relaxation [m]. Must satisfy
+    sigma_delta_max + sigma_Delta_max < d_max - d_min."""
     lambda_Delta: float = 2.0
+    """Decay rate of the upper-margin relaxation σ_Δ."""
     gamma_Delta: float = 1.0
+    """Activation gain for the upper-margin relaxation dynamics."""
     sigma_Delta_max: float = 0.15
+    """Maximum allowed upper-margin relaxation [m]."""
     adaptive_dt: float = 0.01
+    """Integration step for the adaptive barrier ODE [s]."""
 
+    # ------------------------------------------------------------------
+    # Leader motion profile
+    # ------------------------------------------------------------------
     leader_vel_amp: float = 0.5
+    """Amplitude of the sinusoidal leader velocity profile [m/s]."""
     leader_freq: float = 0.5
+    """Frequency of the sinusoidal leader velocity profile [Hz]."""
     leader_accel_steps: int = 200
+    """Number of steps over which the leader accelerates at startup."""
     leader_brake_steps: int = 200
+    """Number of steps over which the leader decelerates back to rest."""
 
-    tree_type: str = "leader_star"  # "leader_star", "leader_chain", "random_tree"
+    # ------------------------------------------------------------------
+    # Scenario generation
+    # ------------------------------------------------------------------
+    R: float = 2.0
+    """Desired formation radius (distance from leader to each follower offset) [m].
+    Must satisfy d_min < R < d_max."""
+    l: float = 7.0
+    """Side length of the cubic spawn workspace [m]."""
     random_seed: int | None = 0
+    """RNG seed for scenario generation; None = non-deterministic."""
     init_noise: float = 0.25
+    """Standard deviation of position noise applied to initial conditions [m]."""
     max_scenario_tries: int = 500
+    """Maximum rejection-sampling attempts when building a feasible scenario."""
 
+    # ------------------------------------------------------------------
+    # Internal
+    # ------------------------------------------------------------------
     counter: int = 0
+    """Step counter incremented by the simulation loop (do not set manually)."""
 
     def validate(self) -> None:
         if self.dim not in (2, 3):
@@ -131,6 +280,8 @@ class SimulationConfig:
             raise ValueError("clf_slack_weight must be positive.")
         if self.clf_force_weight <= 0.0:
             raise ValueError("clf_force_weight must be positive.")
+        if self.clf_torque_weight <= 0.0:
+            raise ValueError("clf_torque_weight must be positive.")
         if self.thrust_weight <= 0.0:
             raise ValueError("thrust_weight must be positive.")
         if self.lgv_epsilon <= 0.0:
@@ -170,6 +321,18 @@ class SimulationConfig:
             raise ValueError("leader_accel_steps must be nonnegative.")
         if self.leader_brake_steps < 0:
             raise ValueError("leader_brake_steps must be nonnegative.")
+        if abs(self.alpha_h_des) >= 1.0:
+            raise ValueError("alpha_h_des must satisfy |alpha_h_des| < 1.")
+        if abs(self.alpha_v_des) >= 1.0:
+            raise ValueError("alpha_v_des must satisfy |alpha_v_des| < 1.")
+        if self.fov_eps <= 0.0:
+            raise ValueError("fov_eps must be positive.")
+        if self.k_fov_omega <= 0.0:
+            raise ValueError("k_fov_omega must be positive.")
+        if self.k_fov_backstep <= 0.0:
+            raise ValueError("k_fov_backstep must be positive.")
+        if self.omega_fov_max <= 0.0:
+            raise ValueError("omega_fov_max must be positive.")
 
 
 @dataclass
@@ -678,6 +841,42 @@ class Parameters:
             default=SimulationConfig.theta_max_y,
             help="FOV range vertical",
         )
+        parser.add_argument(
+            "--alpha_h_des",
+            type=float,
+            default=SimulationConfig.alpha_h_des,
+            help="Desired normalised horizontal camera coordinate",
+        )
+        parser.add_argument(
+            "--alpha_v_des",
+            type=float,
+            default=SimulationConfig.alpha_v_des,
+            help="Desired normalised vertical camera coordinate",
+        )
+        parser.add_argument(
+            "--fov_eps",
+            type=float,
+            default=SimulationConfig.fov_eps,
+            help="FoV numerical regularisation",
+        )
+        parser.add_argument(
+            "--k_fov_omega",
+            type=float,
+            default=SimulationConfig.k_fov_omega,
+            help="FoV rotational backstepping gain",
+        )
+        parser.add_argument(
+            "--k_fov_backstep",
+            type=float,
+            default=SimulationConfig.k_fov_backstep,
+            help="Angular-rate tracking error gain",
+        )
+        parser.add_argument(
+            "--omega_fov_max",
+            type=float,
+            default=SimulationConfig.omega_fov_max,
+            help="Componentwise saturation on omega_des (rad/s)",
+        )
 
         parser.add_argument(
             "--simulation_mode",
@@ -746,6 +945,12 @@ class Parameters:
             type=float,
             default=SimulationConfig.clf_force_weight,
             help="CLF-QP force penalty",
+        )
+        parser.add_argument(
+            "--clf_torque_weight",
+            type=float,
+            default=SimulationConfig.clf_torque_weight,
+            help="CLF-QP torque penalty (high → QP sets τ_ω≈0 when FoV inactive)",
         )
         parser.add_argument(
             "--thrust_weight",

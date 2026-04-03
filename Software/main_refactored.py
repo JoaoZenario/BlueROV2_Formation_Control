@@ -150,11 +150,26 @@ class FormationControlSimulation:
             clf_alpha_sat=self.cfg.clf_alpha_sat,
             clf_slack_weight=self.cfg.clf_slack_weight,
             clf_force_weight=self.cfg.clf_force_weight,
+            clf_torque_weight=self.cfg.clf_torque_weight,
             thrust_weight=self.cfg.thrust_weight,
             lgv_epsilon=self.cfg.lgv_epsilon,
             saturation_switch_ratio=self.cfg.saturation_switch_ratio,
             k_att=self.cfg.k_att,
             k_att_d=self.cfg.k_att_d,
+            use_fov=bool(self.cfg.fov),
+            theta_h_max=self.cfg.theta_max_x,
+            theta_v_max=self.cfg.theta_max_y,
+            mu_fov_pos=0.5 * (self.cfg.c4_h + self.cfg.c4_v),
+            mu_fov_att=0.5 * (self.cfg.c4_h + self.cfg.c4_v),
+            k_fov_att=0.5 * (self.cfg.kp_yaw + self.cfg.kp_pitch),
+            alpha_h_des=self.cfg.alpha_h_des,
+            alpha_v_des=self.cfg.alpha_v_des,
+            fov_eps=self.cfg.fov_eps,
+            k_fov_omega=self.cfg.k_fov_omega,
+            k_fov_backstep=self.cfg.k_fov_backstep,
+            omega_fov_max=self.cfg.omega_fov_max,
+            R_cb=self.cfg.fov_R_cb,
+            p_cb=self.cfg.fov_p_cb,
         )
 
     # ============================================================
@@ -190,7 +205,19 @@ class FormationControlSimulation:
                 if self.cfg.use_quaternions:
                     x0 = np.zeros(13)
                     x0[0:3] = self.scenario.x[i]
-                    x0[3:7] = self.scenario.q[i]  # [x, y, z, w]
+                    # When FoV is active, orient agent i to face its FoV target
+                    # so the initial state satisfies the FoV barrier constraints.
+                    if self.cfg.fov:
+                        neighbors_i = self.neighbors_dict.get(i, [])
+                        if len(neighbors_i) > 0:
+                            target_idx = int(neighbors_i[0])
+                            x0[3:7] = self._fov_aligned_quaternion(
+                                self.scenario.x[i], self.scenario.x[target_idx]
+                            )
+                        else:
+                            x0[3:7] = self.scenario.q[i]
+                    else:
+                        x0[3:7] = self.scenario.q[i]  # [x, y, z, w]
                     x0[7:13] = 0.0  # [u, v, w, wx, wy, wz]
                 else:
                     x0 = np.zeros(12)
@@ -329,6 +356,39 @@ class FormationControlSimulation:
         self.leader_velocity_ref += accel_leader * self.cfg.dt
         return self.leader_velocity_ref.copy(), accel_leader.copy()
 
+    @staticmethod
+    def _fov_aligned_quaternion(p_i: np.ndarray, p_target: np.ndarray) -> np.ndarray:
+        """Return quaternion [x,y,z,w] that aligns body +x axis toward p_target."""
+        d = np.asarray(p_target, dtype=float) - np.asarray(p_i, dtype=float)
+        norm = np.linalg.norm(d)
+        if norm < 1e-9:
+            return np.array([0.0, 0.0, 0.0, 1.0])
+        d_unit = d / norm
+        cos_a = float(np.clip(d_unit[0], -1.0, 1.0))
+        angle = np.arccos(cos_a)
+        if angle < 1e-9:
+            return np.array([0.0, 0.0, 0.0, 1.0])
+        if np.pi - angle < 1e-9:
+            # 180-degree case: rotate around z-axis
+            return np.array([0.0, 0.0, 1.0, 0.0])
+        axis = np.cross(np.array([1.0, 0.0, 0.0]), d_unit)
+        axis /= np.linalg.norm(axis)
+        q = np.zeros(4)
+        q[:3] = axis * np.sin(angle / 2.0)
+        q[3] = np.cos(angle / 2.0)
+        return q
+
+    def _fov_target_position(self, i: int) -> np.ndarray | None:
+        if not self.cfg.fov:
+            return None
+
+        neighbors_i = self.neighbors_dict.get(i, [])
+        if len(neighbors_i) == 0:
+            return None
+
+        target_idx = int(neighbors_i[0])
+        return self._get_position(self.simulators[target_idx].state)
+
     # ============================================================
     # Control computation
     # ============================================================
@@ -380,6 +440,7 @@ class FormationControlSimulation:
         p_i = self._get_position(state_i)
         q_i = self._get_quaternion(state_i)
         nu_i = self._get_body_velocity6(state_i)
+        p_target_I = self._fov_target_position(i)
 
         ctrl: BlueROV2Controller = self.controllers[i]
 
@@ -387,8 +448,25 @@ class FormationControlSimulation:
             v_lead, _ = self._leader_command(step)
             ctrl.update_virtual_velocity_filter(v_lead)
 
-        # Attitude stabilisation torque (tracks the initial pose)
-        if self.q_des is not None:
+        use_fov_torque = bool(self.cfg.fov and p_target_I is not None)
+        if self.mode == "bluerov_clf_qp_tau":
+            if use_fov_torque:
+                tau_omega, _ = ctrl.fov_attitude_torque(
+                    p_i=p_i,
+                    q_i=q_i,
+                    nu_i=nu_i,
+                    p_target_I=p_target_I,
+                )
+            elif self.q_des is not None:
+                tau_omega = ctrl.attitude_torque(
+                    q_des=self.q_des[i],
+                    q_i=q_i,
+                    nu_i=nu_i,
+                    p_i=p_i,
+                )
+            else:
+                tau_omega = None
+        elif self.q_des is not None and not use_fov_torque:
             tau_omega = ctrl.attitude_torque(
                 q_des=self.q_des[i],
                 q_i=q_i,
@@ -396,7 +474,7 @@ class FormationControlSimulation:
                 p_i=p_i,
             )
         else:
-            tau_omega = np.zeros(3)
+            tau_omega = None
 
         if self.mode == "bluerov_feedback_linearization":
             tau_i, debug = ctrl.do_control(
@@ -408,6 +486,8 @@ class FormationControlSimulation:
                 incidence_signs=incidence_signs,
                 mode="feedback_linearization",
                 tau_omega=tau_omega,
+                p_target_I=p_target_I,
+                use_fov_torque=use_fov_torque,
             )
             return tau_i, debug
 
@@ -422,6 +502,8 @@ class FormationControlSimulation:
                 mode="clf_qp_tau",
                 tau_omega=tau_omega,
                 local_fallback_tau_v=np.zeros(3),
+                p_target_I=p_target_I,
+                use_fov_torque=use_fov_torque,
             )
             return tau_i, debug
 
@@ -442,6 +524,8 @@ class FormationControlSimulation:
                 tau_omega=tau_omega,
                 f_min=f_min,
                 f_max=f_max,
+                p_target_I=p_target_I,
+                use_fov_torque=use_fov_torque,
             )
 
             tau_i = B @ f_i
@@ -463,6 +547,7 @@ class FormationControlSimulation:
         for step in range(self.cfg.steps):
             u_cmds = []
             step_debug = []
+            step_fov = [[0.0, 0.0] for _ in range(self.cfg.N)]
 
             # ---------- STEP 1: CONTROL ----------
             for i in range(self.cfg.N):
@@ -476,6 +561,10 @@ class FormationControlSimulation:
 
                 else:
                     u_i, debug_i = self._compute_control_bluerov(i, step)
+                    if debug_i.get("fov_active", False):
+                        theta_h = float(np.degrees(debug_i.get("theta_h", 0.0)))
+                        theta_v = float(np.degrees(debug_i.get("theta_v", 0.0)))
+                        step_fov[i] = [theta_h, theta_v]
 
                 u_cmds.append(u_i)
                 step_debug.append(debug_i)
@@ -529,8 +618,7 @@ class FormationControlSimulation:
                 self.data.q_history.append(self.q.copy())
 
             if self.cfg.fov:
-                # Placeholder FOV history until a dedicated FOV module populates real angles.
-                self.data.fov_history.append([[0.0, 0.0] for _ in range(self.cfg.N)])
+                self.data.fov_history.append(step_fov)
 
             # ---------- STEP 4: PROGRESS ----------
             if self.options.show_progress:

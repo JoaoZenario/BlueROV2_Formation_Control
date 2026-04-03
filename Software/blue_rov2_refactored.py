@@ -103,6 +103,43 @@ class BlueROV2:
         # Actuator matrix for BlueROV2 Heavy
         self.B = self._build_actuator_matrix()
 
+        # ============================================================
+        # System dimensions and input constraints (for SimulationSystem)
+        # ============================================================
+        self.state_dim = 13  # [p(3), q(4), nu(6)]
+        self.input_dim = 6  # [Fx, Fy, Fz, Mx, My, Mz]
+
+        # Input wrench limits (body frame)
+        # Force limits based on 8 thrusters with ~40N each = ~320N total
+        # Conservative estimate: ~200N sustained force per direction
+        # Torque limits scaled appropriately for underwater vehicle
+        force_limit = 200.0  # Newtons
+        torque_limit = 50.0  # Newton-meters
+
+        self.u_min = np.array(
+            [
+                -force_limit,
+                -force_limit,
+                -force_limit,
+                -torque_limit,
+                -torque_limit,
+                -torque_limit,
+            ],
+            dtype=float,
+        )
+        self.u_max = np.array(
+            [
+                force_limit,
+                force_limit,
+                force_limit,
+                torque_limit,
+                torque_limit,
+                torque_limit,
+            ],
+            dtype=float,
+        )
+        self.u_norm_max = None  # No norm constraint; handled per-component
+
     # ============================================================
     # Public interface expected by the controller
     # ============================================================
@@ -346,6 +383,3 @@ class BlueROV2:
         x = np.asarray(x, dtype=float).reshape(13).copy()
         x[3:7] = normalize_vector(x[3:7])
         return x
-
-
-normalize_vector
