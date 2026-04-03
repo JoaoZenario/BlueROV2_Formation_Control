@@ -1138,6 +1138,17 @@ class BlueROV2Config(BarrierConfig):
     # numerical regularization
     fov_eps: float = 1e-6
 
+    # flag to enable the adaptive barrier-domain expansion based on FoV violation
+    use_adaptive_fov_barrier: bool = False
+
+    lambda_sigma_fov_h: float = 2.0
+    gamma_sigma_fov_h: float = 1.0
+    sigma_fov_h_max: float = 0.0
+
+    lambda_sigma_fov_v: float = 2.0
+    gamma_sigma_fov_v: float = 1.0
+    sigma_fov_v_max: float = 0.0
+
     def __post_init__(self) -> None:
         super().__post_init__()
         if self.c_outer <= 0.0:
@@ -1178,6 +1189,20 @@ class BlueROV2Config(BarrierConfig):
             raise ValueError("k_att must be nonnegative.")
         if self.k_att_d < 0.0:
             raise ValueError("k_att_d must be nonnegative.")
+
+        if self.lambda_sigma_fov_h <= 0.0:
+            raise ValueError("lambda_sigma_fov_h must be positive.")
+        if self.gamma_sigma_fov_h < 0.0:
+            raise ValueError("gamma_sigma_fov_h must be nonnegative.")
+        if self.sigma_fov_h_max < 0.0:
+            raise ValueError("sigma_fov_h_max must be nonnegative.")
+
+        if self.lambda_sigma_fov_v <= 0.0:
+            raise ValueError("lambda_sigma_fov_v must be positive.")
+        if self.gamma_sigma_fov_v < 0.0:
+            raise ValueError("gamma_sigma_fov_v must be nonnegative.")
+        if self.sigma_fov_v_max < 0.0:
+            raise ValueError("sigma_fov_v_max must be nonnegative.")
 
         if self.use_fov:
             if self.theta_h_max <= 0.0:
@@ -1256,6 +1281,12 @@ class BlueROV2Controller(ControllerBase):
         # Rotational FoV command filter state
         self.omega_f = np.zeros(3)
         self.domega_f = np.zeros(3)
+
+        # Adaptive FoV barrier-domain states
+        self.sigma_fov_h = 0.0
+        self.sigma_fov_v = 0.0
+        self._pending_fov_activation = 0.0
+        self._fov_barrier_updated_this_cycle = False
 
     # ============================================================
     # Basic utilities
@@ -1366,9 +1397,12 @@ class BlueROV2Controller(ControllerBase):
         alpha_h: float,
         alpha_v: float,
     ) -> float:
-        den_h = max(1.0 - alpha_h**2, self.cfg.fov_eps)
-        den_v = max(1.0 - alpha_v**2, self.cfg.fov_eps)
-        return float(np.log(1.0 / den_h) + np.log(1.0 / den_v))
+        alpha_h_lim, alpha_v_lim = self.effective_fov_limits()
+
+        den_h = max(alpha_h_lim**2 - alpha_h**2, self.cfg.fov_eps)
+        den_v = max(alpha_v_lim**2 - alpha_v**2, self.cfg.fov_eps)
+
+        return float(np.log(alpha_h_lim**2 / den_h) + np.log(alpha_v_lim**2 / den_v))
 
     def fov_barrier_gradient_alpha(
         self,
@@ -1376,8 +1410,10 @@ class BlueROV2Controller(ControllerBase):
         alpha_v: float,
         recentered: bool = True,
     ) -> Array:
-        den_h = max(1.0 - alpha_h**2, self.cfg.fov_eps)
-        den_v = max(1.0 - alpha_v**2, self.cfg.fov_eps)
+        alpha_h_lim, alpha_v_lim = self.effective_fov_limits()
+
+        den_h = max(alpha_h_lim**2 - alpha_h**2, self.cfg.fov_eps)
+        den_v = max(alpha_v_lim**2 - alpha_v**2, self.cfg.fov_eps)
 
         grad = np.array(
             [
@@ -1390,8 +1426,9 @@ class BlueROV2Controller(ControllerBase):
         if recentered:
             ahd = self.cfg.alpha_h_des
             avd = self.cfg.alpha_v_des
-            den_hd = max(1.0 - ahd**2, self.cfg.fov_eps)
-            den_vd = max(1.0 - avd**2, self.cfg.fov_eps)
+
+            den_hd = max(alpha_h_lim**2 - ahd**2, self.cfg.fov_eps)
+            den_vd = max(alpha_v_lim**2 - avd**2, self.cfg.fov_eps)
 
             grad_des = np.array(
                 [
@@ -1513,6 +1550,8 @@ class BlueROV2Controller(ControllerBase):
         if (not self.cfg.use_fov) or (p_target_I is None):
             return np.zeros(3), np.zeros(3), {"fov_active": False}
 
+        self.update_adaptive_fov_barrier_state()
+
         r_b, r_c, rel_I = self.relative_position_camera_frame(
             p_i=p_i,
             q_i=q_i,
@@ -1532,6 +1571,8 @@ class BlueROV2Controller(ControllerBase):
             grad_rc=grad_rc,
         )
 
+        alpha_h_lim, alpha_v_lim = self.effective_fov_limits()
+
         debug = {
             "fov_active": True,
             "r_b": r_b,
@@ -1542,6 +1583,10 @@ class BlueROV2Controller(ControllerBase):
             "grad_rc_fov": grad_rc,
             "grad_pos_I_fov": grad_pos_I,
             "grad_att_b_fov": grad_att_b,
+            "alpha_h_lim": alpha_h_lim,
+            "alpha_v_lim": alpha_v_lim,
+            "sigma_fov_h": self.sigma_fov_h,
+            "sigma_fov_v": self.sigma_fov_v,
             **dbg_rc,
         }
         return grad_pos_I, grad_att_b, debug
@@ -1567,6 +1612,47 @@ class BlueROV2Controller(ControllerBase):
         s = (occupancy - soft_zone) / max(hard_zone - soft_zone, self.cfg.fov_eps)
         smoothstep = s * s * (3.0 - 2.0 * s)
         return float(1.0 - smoothstep)
+
+    # ============================================================
+    # FoV Barrier-domain adaptation
+    # ============================================================
+    def set_fov_barrier_activation(self, psi: float) -> None:
+        psi = max(float(psi), 0.0)
+        self._pending_fov_activation = max(self._pending_fov_activation, psi)
+
+    def update_adaptive_fov_barrier_state(self) -> None:
+        if not self.cfg.use_adaptive_fov_barrier:
+            return
+
+        if self._fov_barrier_updated_this_cycle:
+            return
+
+        dt = self.cfg.dt
+        psi = self._pending_fov_activation
+
+        self.sigma_fov_h += dt * (
+            -self.cfg.lambda_sigma_fov_h * self.sigma_fov_h
+            + self.cfg.gamma_sigma_fov_h * psi
+        )
+        self.sigma_fov_v += dt * (
+            -self.cfg.lambda_sigma_fov_v * self.sigma_fov_v
+            + self.cfg.gamma_sigma_fov_v * psi
+        )
+
+        self.sigma_fov_h = float(
+            np.clip(self.sigma_fov_h, 0.0, self.cfg.sigma_fov_h_max)
+        )
+        self.sigma_fov_v = float(
+            np.clip(self.sigma_fov_v, 0.0, self.cfg.sigma_fov_v_max)
+        )
+
+        self._pending_fov_activation = 0.0
+        self._fov_barrier_updated_this_cycle = True
+
+    def effective_fov_limits(self) -> Tuple[float, float]:
+        if not self.cfg.use_adaptive_fov_barrier:
+            return 1.0, 1.0
+        return 1.0 + self.sigma_fov_h, 1.0 + self.sigma_fov_v
 
     # ============================================================
     # FoV rotational backstepping
@@ -1616,6 +1702,9 @@ class BlueROV2Controller(ControllerBase):
         gain = self.cfg.k_fov_omega * self.cfg.mu_fov_att
         omega_des_nom = gain * grad_att_b
         omega_des = self.saturate_angular_velocity_components(omega_des_nom)
+
+        psi_rate = float(np.linalg.norm(omega_des_nom - omega_des))
+        self.set_fov_barrier_activation(max(self._pending_fov_activation, psi_rate))
 
         if gain <= 0.0:
             grad_att_b_cmd = np.zeros(3)
@@ -1704,6 +1793,9 @@ class BlueROV2Controller(ControllerBase):
         )
         tau_r = self.saturate_rotational_torque_components(tau_r_nom)
 
+        psi_fov = float(np.linalg.norm(tau_r_nom - tau_r))
+        self.set_fov_barrier_activation(psi_fov)
+
         dbg = {
             **dbg_fov,
             "omega_body": omega_body,
@@ -1717,6 +1809,9 @@ class BlueROV2Controller(ControllerBase):
             "h_r": h_r,
             "tau_r_fov_nom": tau_r_nom,
             "tau_r_fov": tau_r,
+            "fov_barrier_activation": psi_fov,
+            "sigma_fov_h": self.sigma_fov_h,
+            "sigma_fov_v": self.sigma_fov_v,
         }
         return tau_r, dbg
 
@@ -1907,6 +2002,7 @@ class BlueROV2Controller(ControllerBase):
         p_i = np.asarray(p_i, dtype=float).reshape(3)
         q_i = np.asarray(q_i, dtype=float).reshape(4)
         nu_i = np.asarray(nu_i, dtype=float).reshape(6)
+        self._fov_barrier_updated_this_cycle = False
         chi_i = np.hstack((p_i, q_i))
 
         M = self._mass_matrix(chi_i, nu_i)

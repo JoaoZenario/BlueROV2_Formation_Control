@@ -168,6 +168,13 @@ class FormationControlSimulation:
             k_fov_omega=self.cfg.k_fov_omega,
             k_fov_backstep=self.cfg.k_fov_backstep,
             omega_fov_max=self.cfg.omega_fov_max,
+            use_adaptive_fov_barrier=bool(self.cfg.use_adaptive_fov_barrier),
+            lambda_sigma_fov_h=self.cfg.lambda_sigma_fov_h,
+            gamma_sigma_fov_h=self.cfg.gamma_sigma_fov_h,
+            sigma_fov_h_max=self.cfg.sigma_fov_h_max,
+            lambda_sigma_fov_v=self.cfg.lambda_sigma_fov_v,
+            gamma_sigma_fov_v=self.cfg.gamma_sigma_fov_v,
+            sigma_fov_v_max=self.cfg.sigma_fov_v_max,
             R_cb=self.cfg.fov_R_cb,
             p_cb=self.cfg.fov_p_cb,
         )

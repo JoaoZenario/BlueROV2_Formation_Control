@@ -161,6 +161,20 @@ class SimulationConfig:
     """Backstepping gain: penalises angular-rate tracking error."""
     omega_fov_max: float = 0.10
     """Component-wise saturation applied to the desired angular rate [rad/s]."""
+    use_adaptive_fov_barrier: bool = False
+    """Enable adaptive FoV-domain expansion when FoV rotational saturation is active."""
+    lambda_sigma_fov_h: float = 2.0
+    """Decay rate of horizontal FoV-domain expansion."""
+    gamma_sigma_fov_h: float = 1.0
+    """Activation gain of horizontal FoV-domain expansion."""
+    sigma_fov_h_max: float = 0.0
+    """Maximum horizontal FoV-domain expansion."""
+    lambda_sigma_fov_v: float = 2.0
+    """Decay rate of vertical FoV-domain expansion."""
+    gamma_sigma_fov_v: float = 1.0
+    """Activation gain of vertical FoV-domain expansion."""
+    sigma_fov_v_max: float = 0.0
+    """Maximum vertical FoV-domain expansion."""
     fov_R_cb: np.ndarray | None = None
     """Rotation matrix from camera frame to body frame (3×3). None → eye(3)."""
     fov_p_cb: np.ndarray | None = None
@@ -333,6 +347,18 @@ class SimulationConfig:
             raise ValueError("k_fov_backstep must be positive.")
         if self.omega_fov_max <= 0.0:
             raise ValueError("omega_fov_max must be positive.")
+        if self.lambda_sigma_fov_h <= 0.0:
+            raise ValueError("lambda_sigma_fov_h must be positive.")
+        if self.gamma_sigma_fov_h < 0.0:
+            raise ValueError("gamma_sigma_fov_h must be nonnegative.")
+        if self.sigma_fov_h_max < 0.0:
+            raise ValueError("sigma_fov_h_max must be nonnegative.")
+        if self.lambda_sigma_fov_v <= 0.0:
+            raise ValueError("lambda_sigma_fov_v must be positive.")
+        if self.gamma_sigma_fov_v < 0.0:
+            raise ValueError("gamma_sigma_fov_v must be nonnegative.")
+        if self.sigma_fov_v_max < 0.0:
+            raise ValueError("sigma_fov_v_max must be nonnegative.")
 
 
 @dataclass
@@ -662,6 +688,7 @@ class Parameters:
             "rec",
             "use_quaternions",
             "use_adaptive_barrier",
+            "use_adaptive_fov_barrier",
         }
         normalized = dict(overrides)
         for key in bool_keys:
@@ -876,6 +903,48 @@ class Parameters:
             type=float,
             default=SimulationConfig.omega_fov_max,
             help="Componentwise saturation on omega_des (rad/s)",
+        )
+        parser.add_argument(
+            "--use_adaptive_fov_barrier",
+            type=int,
+            default=int(SimulationConfig.use_adaptive_fov_barrier),
+            help="Enable adaptive FoV-domain expansion (0/1)",
+        )
+        parser.add_argument(
+            "--lambda_sigma_fov_h",
+            type=float,
+            default=SimulationConfig.lambda_sigma_fov_h,
+            help="Horizontal FoV-domain expansion decay rate",
+        )
+        parser.add_argument(
+            "--gamma_sigma_fov_h",
+            type=float,
+            default=SimulationConfig.gamma_sigma_fov_h,
+            help="Horizontal FoV-domain expansion activation gain",
+        )
+        parser.add_argument(
+            "--sigma_fov_h_max",
+            type=float,
+            default=SimulationConfig.sigma_fov_h_max,
+            help="Maximum horizontal FoV-domain expansion",
+        )
+        parser.add_argument(
+            "--lambda_sigma_fov_v",
+            type=float,
+            default=SimulationConfig.lambda_sigma_fov_v,
+            help="Vertical FoV-domain expansion decay rate",
+        )
+        parser.add_argument(
+            "--gamma_sigma_fov_v",
+            type=float,
+            default=SimulationConfig.gamma_sigma_fov_v,
+            help="Vertical FoV-domain expansion activation gain",
+        )
+        parser.add_argument(
+            "--sigma_fov_v_max",
+            type=float,
+            default=SimulationConfig.sigma_fov_v_max,
+            help="Maximum vertical FoV-domain expansion",
         )
 
         parser.add_argument(
