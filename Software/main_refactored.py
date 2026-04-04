@@ -23,7 +23,7 @@ from controller_refactored import (
 )
 
 
-DO_ANIMATION = False
+DO_ANIMATION = True
 DO_TOPOLOGY_PLOT = True
 DO_BARRIER_PLOT = True
 
@@ -365,25 +365,15 @@ class FormationControlSimulation:
 
     @staticmethod
     def _fov_aligned_quaternion(p_i: np.ndarray, p_target: np.ndarray) -> np.ndarray:
-        """Return quaternion [x,y,z,w] that aligns body +x axis toward p_target."""
+        """Return quaternion [x,y,z,w] with body z kept upward and +x yaw-aligned."""
         d = np.asarray(p_target, dtype=float) - np.asarray(p_i, dtype=float)
-        norm = np.linalg.norm(d)
-        if norm < 1e-9:
+        d_xy = d[:2]
+        norm_xy = np.linalg.norm(d_xy)
+        if norm_xy < 1e-9:
             return np.array([0.0, 0.0, 0.0, 1.0])
-        d_unit = d / norm
-        cos_a = float(np.clip(d_unit[0], -1.0, 1.0))
-        angle = np.arccos(cos_a)
-        if angle < 1e-9:
-            return np.array([0.0, 0.0, 0.0, 1.0])
-        if np.pi - angle < 1e-9:
-            # 180-degree case: rotate around z-axis
-            return np.array([0.0, 0.0, 1.0, 0.0])
-        axis = np.cross(np.array([1.0, 0.0, 0.0]), d_unit)
-        axis /= np.linalg.norm(axis)
-        q = np.zeros(4)
-        q[:3] = axis * np.sin(angle / 2.0)
-        q[3] = np.cos(angle / 2.0)
-        return q
+
+        yaw = float(np.arctan2(d_xy[1], d_xy[0]))
+        return np.array([0.0, 0.0, np.sin(0.5 * yaw), np.cos(0.5 * yaw)])
 
     def _fov_target_position(self, i: int) -> np.ndarray | None:
         if not self.cfg.fov:
@@ -725,11 +715,13 @@ def main():
 
     animator = Animation(params)
     if DO_ANIMATION:
+        FRAMERATE = 100
         animator.replay_animation(
             params,
             sim.u_history,
             show_topology=DO_TOPOLOGY_PLOT,
             show_barrier=DO_BARRIER_PLOT,
+            fps=FRAMERATE,
         )
     else:
         animator.show_static_plots(

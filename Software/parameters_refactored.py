@@ -62,11 +62,13 @@ class SimulationConfig:
     """Simulation time step [s]."""
     steps: int = 3000
     """Total number of simulation steps."""
+    animation_frame_stride: int = 1
+    """Animate every k-th simulation frame (k>=1) to speed up playback."""
 
     # ------------------------------------------------------------------
     # Controller / simulation mode
     # ------------------------------------------------------------------
-    simulation_mode: str = "bluerov_feedback_linearization"
+    simulation_mode: str = "bluerov_clf_qp_tau"
     """Controller backend:
       'single_integrator'              – first-order SI
       'double_integrator'              – second-order DI
@@ -274,6 +276,8 @@ class SimulationConfig:
             raise ValueError("dt must be positive.")
         if self.steps < 1:
             raise ValueError("steps must be positive.")
+        if self.animation_frame_stride < 1:
+            raise ValueError("animation_frame_stride must be >= 1.")
         if self.v_max <= 0.0:
             raise ValueError("v_max must be positive.")
         if self.a_max <= 0.0:
@@ -783,6 +787,12 @@ class Parameters:
             type=int,
             default=SimulationConfig.steps,
             help="Simulation steps",
+        )
+        parser.add_argument(
+            "--animation_frame_stride",
+            type=int,
+            default=SimulationConfig.animation_frame_stride,
+            help="Animate every k-th frame to speed up playback",
         )
 
         parser.add_argument(

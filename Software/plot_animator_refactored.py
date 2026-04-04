@@ -7,6 +7,7 @@ import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation, PillowWriter
 
 from graphs_utils import plot_graph_from_adjacency
+from rot_utils import rotation_matrix_from_quaternion
 
 
 class Animation:
@@ -19,6 +20,16 @@ class Animation:
         self.dim = self.cfg.dim
         self.is_3d = self.cfg.dim == 3
         self.debug_history = getattr(self.data, "debug_history", [])
+        self._R_cb = (
+            np.eye(3)
+            if getattr(self.cfg, "fov_R_cb", None) is None
+            else np.asarray(self.cfg.fov_R_cb, dtype=float).reshape(3, 3)
+        )
+        self._p_cb = (
+            np.zeros(3)
+            if getattr(self.cfg, "fov_p_cb", None) is None
+            else np.asarray(self.cfg.fov_p_cb, dtype=float).reshape(3)
+        )
 
         self.colors = [
             "#{:02X}{:02X}{:02X}".format(int(r * 255), int(g * 255), int(b * 255))
@@ -91,6 +102,124 @@ class Animation:
                         )[0]
                     self.edge_lines.append(line)
                     self.edge_pairs.append((i, j))
+
+        self.is_bluerov_mode = str(self.cfg.simulation_mode).startswith("bluerov")
+        self.rov_body_lines = []
+        if self.is_bluerov_mode:
+            # Approximate BlueROV2 Heavy envelope [m] used for visualization only.
+            self.rov_len = 0.457
+            self.rov_wid = 0.338
+            self.rov_hei = 0.254
+
+            if self.is_3d:
+                hx = 0.5 * self.rov_len
+                hy = 0.5 * self.rov_wid
+                hz = 0.5 * self.rov_hei
+                self._rov_body_corners_b = np.array(
+                    [
+                        [+hx, +hy, +hz],
+                        [+hx, +hy, -hz],
+                        [+hx, -hy, +hz],
+                        [+hx, -hy, -hz],
+                        [-hx, +hy, +hz],
+                        [-hx, +hy, -hz],
+                        [-hx, -hy, +hz],
+                        [-hx, -hy, -hz],
+                    ],
+                    dtype=float,
+                )
+                self._rov_body_edges = [
+                    (0, 1),
+                    (2, 3),
+                    (4, 5),
+                    (6, 7),
+                    (0, 2),
+                    (4, 6),
+                    (1, 3),
+                    (5, 7),
+                    (0, 4),
+                    (2, 6),
+                    (1, 5),
+                    (3, 7),
+                ]
+                for i in range(self.N):
+                    edges_i = []
+                    for _ in self._rov_body_edges:
+                        edges_i.append(
+                            self.ax.plot(
+                                [], [], [], color=self.colors[i], lw=1.0, alpha=0.8
+                            )[0]
+                        )
+                    self.rov_body_lines.append(edges_i)
+            else:
+                self._rov_body_edges = [(0, 1), (1, 2), (2, 3), (3, 0)]
+                for i in range(self.N):
+                    edges_i = []
+                    for _ in self._rov_body_edges:
+                        edges_i.append(
+                            self.ax.plot(
+                                [], [], color=self.colors[i], lw=1.2, alpha=0.8
+                            )[0]
+                        )
+                    self.rov_body_lines.append(edges_i)
+
+        # Body-attached frame visualization
+        self.frame_axis_len = 0.2 * max(getattr(self.cfg, "R", 1.0), 0.5)
+        self.frame_x_lines = []
+        self.frame_y_lines = []
+        self.frame_z_lines = []
+        for _i in range(self.N):
+            if self.is_3d:
+                self.frame_x_lines.append(
+                    self.ax.plot([], [], [], color="tab:red", lw=1.4, alpha=0.9)[0]
+                )
+                self.frame_y_lines.append(
+                    self.ax.plot([], [], [], color="tab:green", lw=1.4, alpha=0.9)[0]
+                )
+                self.frame_z_lines.append(
+                    self.ax.plot([], [], [], color="tab:blue", lw=1.4, alpha=0.9)[0]
+                )
+            else:
+                self.frame_x_lines.append(
+                    self.ax.plot([], [], color="tab:red", lw=1.4, alpha=0.9)[0]
+                )
+                self.frame_y_lines.append(
+                    self.ax.plot([], [], color="tab:green", lw=1.4, alpha=0.9)[0]
+                )
+
+        # FoV boundary visualization (draw only when FoV is active)
+        # Use a compact local pyramid instead of long rays.
+        self.fov_pyramid_len = 0.8 * self.frame_axis_len
+        self.fov_rays = []
+        if bool(getattr(self.cfg, "fov", False)):
+            n_rays = 8 if self.is_3d else 3
+            for _i in range(self.N):
+                rays_i = []
+                for _ in range(n_rays):
+                    if self.is_3d:
+                        rays_i.append(
+                            self.ax.plot(
+                                [],
+                                [],
+                                [],
+                                color="tab:orange",
+                                lw=1.0,
+                                alpha=0.7,
+                                ls="-.",
+                            )[0]
+                        )
+                    else:
+                        rays_i.append(
+                            self.ax.plot(
+                                [],
+                                [],
+                                color="tab:orange",
+                                lw=1.0,
+                                alpha=0.7,
+                                ls="-.",
+                            )[0]
+                        )
+                self.fov_rays.append(rays_i)
 
         self.telemetry_text = self.fig_space.text(
             0.02,
@@ -479,6 +608,126 @@ class Animation:
         if self.is_3d:
             self.ax.set_zlim(mins[2] - pad, maxs[2] + pad)
 
+    def _rotation_from_history(self, q_frame, i):
+        if q_frame is None:
+            return np.eye(3)
+        qi = np.asarray(q_frame[i], dtype=float).reshape(4)
+        return rotation_matrix_from_quaternion(qi)
+
+    def _set_2d_line(self, line, p0, p1):
+        self._safe_set_data(line, [p0[0], p1[0]], [p0[1], p1[1]])
+
+    def _set_3d_line(self, line, p0, p1):
+        line.set_data([p0[0], p1[0]], [p0[1], p1[1]])
+        line.set_3d_properties([p0[2], p1[2]])
+
+    def _clear_line(self, line):
+        if self.is_3d:
+            line.set_data([], [])
+            line.set_3d_properties([])
+        else:
+            line.set_data([], [])
+
+    def _update_frame_and_fov_overlays(self, frame, x, q):
+        for i in range(self.N):
+            p_i = np.asarray(x[i], dtype=float).reshape(3)
+            R_b2I = self._rotation_from_history(q, i)
+
+            if self.rov_body_lines:
+                if self.is_3d:
+                    corners_I = p_i + (R_b2I @ self._rov_body_corners_b.T).T
+                    for k, (a, b) in enumerate(self._rov_body_edges):
+                        self._set_3d_line(
+                            self.rov_body_lines[i][k], corners_I[a], corners_I[b]
+                        )
+                else:
+                    ex2 = R_b2I[:2, 0]
+                    ey2 = R_b2I[:2, 1]
+                    ex2 /= max(np.linalg.norm(ex2), 1e-9)
+                    ey2 /= max(np.linalg.norm(ey2), 1e-9)
+                    c = p_i[:2]
+                    hx = 0.5 * self.rov_len
+                    hy = 0.5 * self.rov_wid
+                    corners = [
+                        c + hx * ex2 + hy * ey2,
+                        c + hx * ex2 - hy * ey2,
+                        c - hx * ex2 - hy * ey2,
+                        c - hx * ex2 + hy * ey2,
+                    ]
+                    for k, (a, b) in enumerate(self._rov_body_edges):
+                        self._safe_set_data(
+                            self.rov_body_lines[i][k],
+                            [corners[a][0], corners[b][0]],
+                            [corners[a][1], corners[b][1]],
+                        )
+
+            ex = R_b2I @ np.array([1.0, 0.0, 0.0])
+            ey = R_b2I @ np.array([0.0, 1.0, 0.0])
+            ez = R_b2I @ np.array([0.0, 0.0, 1.0])
+
+            p_ex = p_i + self.frame_axis_len * ex
+            p_ey = p_i + self.frame_axis_len * ey
+            if self.is_3d:
+                p_ez = p_i + self.frame_axis_len * ez
+                self._set_3d_line(self.frame_x_lines[i], p_i, p_ex)
+                self._set_3d_line(self.frame_y_lines[i], p_i, p_ey)
+                self._set_3d_line(self.frame_z_lines[i], p_i, p_ez)
+            else:
+                self._set_2d_line(self.frame_x_lines[i], p_i, p_ex)
+                self._set_2d_line(self.frame_y_lines[i], p_i, p_ey)
+
+            if not self.fov_rays:
+                continue
+
+            dbg_i = None
+            if frame < len(self.debug_history):
+                step_dbg = self.debug_history[frame]
+                if isinstance(step_dbg, list) and i < len(step_dbg):
+                    dbg_i = step_dbg[i]
+
+            if not isinstance(dbg_i, dict) or not dbg_i.get("fov_active", False):
+                for ray in self.fov_rays[i]:
+                    self._clear_line(ray)
+                continue
+
+            alpha_h_lim = float(dbg_i.get("alpha_h_lim", 1.0))
+            alpha_v_lim = float(dbg_i.get("alpha_v_lim", 1.0))
+            tan_h = np.tan(self.cfg.theta_max_x) * alpha_h_lim
+            tan_v = np.tan(self.cfg.theta_max_y) * alpha_v_lim
+
+            p_cam = p_i + R_b2I @ self._p_cb
+            if self.is_3d:
+                corners_c = [
+                    np.array([1.0, +tan_h, +tan_v]),
+                    np.array([1.0, +tan_h, -tan_v]),
+                    np.array([1.0, -tan_h, -tan_v]),
+                    np.array([1.0, -tan_h, +tan_v]),
+                ]
+                corners_I = []
+                for c_c in corners_c:
+                    c_b = self._R_cb.T @ c_c
+                    c_I = p_cam + self.fov_pyramid_len * (R_b2I @ c_b)
+                    corners_I.append(c_I)
+
+                # Apex-to-corner edges
+                for k in range(4):
+                    self._set_3d_line(self.fov_rays[i][k], p_cam, corners_I[k])
+
+                # Base perimeter edges
+                base_pairs = [(0, 1), (1, 2), (2, 3), (3, 0)]
+                for k, (a, b) in enumerate(base_pairs, start=4):
+                    self._set_3d_line(self.fov_rays[i][k], corners_I[a], corners_I[b])
+            else:
+                c0_c = np.array([1.0, +tan_h, 0.0])
+                c1_c = np.array([1.0, -tan_h, 0.0])
+                c0_I = p_cam + self.fov_pyramid_len * (R_b2I @ (self._R_cb.T @ c0_c))
+                c1_I = p_cam + self.fov_pyramid_len * (R_b2I @ (self._R_cb.T @ c1_c))
+
+                # Small local FoV triangle in 2D.
+                self._set_2d_line(self.fov_rays[i][0], p_cam, c0_I)
+                self._set_2d_line(self.fov_rays[i][1], p_cam, c1_I)
+                self._set_2d_line(self.fov_rays[i][2], c0_I, c1_I)
+
     def _barrier_scalar(self, r):
         r = np.asarray(r, dtype=float)
         r2 = r**2
@@ -614,6 +863,9 @@ class Animation:
                 cval = (target - d) / denom
 
             self.edge_lines[idx].set_color(cmap(np.clip(cval, 0.0, 1.0)))
+
+        # Workspace body frames + FoV overlays
+        self._update_frame_and_fov_overlays(frame, x, q)
 
         # Telemetry per agent
         for i in range(self.N):
@@ -950,12 +1202,18 @@ class Animation:
         save_path=None,
         fps=30,
     ):
+        n_frames_total = min(params.config.steps, len(params.data.history))
+        stride = max(1, int(getattr(self.cfg, "animation_frame_stride", 1)))
+        frame_indices = range(0, n_frames_total, stride)
+
         def update_frame(frame):
             self.plot_handle(frame, u_history)
             artists = (
                 self.dots
                 + self.trails
                 + self.edge_lines
+                + self.frame_x_lines
+                + self.frame_y_lines
                 + self.dist_lines
                 + self.err_lines
                 + [self.err_mean_line]
@@ -964,6 +1222,14 @@ class Animation:
                 + self.force_lines
                 + [self.telemetry_text]
             )
+            if self.rov_body_lines:
+                for edges_i in self.rov_body_lines:
+                    artists += edges_i
+            if self.is_3d:
+                artists += self.frame_z_lines
+            if self.fov_rays:
+                for rays_i in self.fov_rays:
+                    artists += rays_i
             if self.has_fov:
                 artists += self.fov_x_lines + self.fov_y_lines
             return artists
@@ -971,7 +1237,7 @@ class Animation:
         self.animation = FuncAnimation(
             self.fig_space,
             update_frame,
-            frames=min(params.config.steps, len(params.data.history)),
+            frames=frame_indices,
             interval=1000 / fps,
             blit=False,
             repeat=False,
