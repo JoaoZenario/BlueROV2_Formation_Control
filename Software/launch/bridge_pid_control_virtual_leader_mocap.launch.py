@@ -14,13 +14,13 @@ Behavior:
     - FoV can optionally look at the virtual target
 
 Example target:
-    x = 0.0
-    y = 0.0
+    x = 0.0,
+    y = 0.0,
     z = -1.0
 
 You can move the target by changing:
-    virtual_target_x
-    virtual_target_y
+    virtual_target_x,
+    virtual_target_y,
     virtual_target_z
 """
 
