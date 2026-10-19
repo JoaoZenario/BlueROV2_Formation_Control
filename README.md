@@ -1,6 +1,6 @@
 # Sensor-based Formation Control of Underwater Multi-Robot Systems Using Barrier Lyapunov Functions
 
-MSc thesis project, KTH Royal Institute of Technology, Stockholm.
+MSc thesis project, KTH Royal Institute of Technology, Stockholm, Sweden.
 
 **Author:** João Zenário
 **Supervisors:** Nicola De Carli, Victor Nan Fernandez-Ayala
@@ -34,11 +34,11 @@ This repository contains the code, data and analysis tools developed for my MSc 
 
 The core contribution is a **control Lyapunov function quadratic program (CLF-QP)** formation controller that uses **recentred Barrier Lyapunov Functions (BLFs)** to enforce several safety requirements at once:
 
-- inter-robot collision avoidance
+- collision avoidance
 - connectivity maintenance between neighbours
 - camera field-of-view (FoV) compliance
-- pool boundary avoidance
 
+The CLF-QP is combined with a **command-filtered backstepping** approach. Because each robot senses its neighbours only through onboard cameras, their velocities are not directly available, and the filter avoids the analytical derivatives of the virtual control inputs that would otherwise require them.
 ### Key insight
 
 Standard barrier functions are centred on the origin of the constraint, which can conflict with the desired formation offset and degrade tracking. Recentring each BLF so that its minimum aligns with the desired formation offset removes this conflict. In the experiments, the safety constraints did not trade off against performance. They actually improved formation accuracy.
