@@ -4,33 +4,29 @@ MSc thesis project, KTH Royal Institute of Technology, Stockholm.
 
 **Author:** João Zenário
 **Supervisors:** Nicola De Carli, Victor Nan Fernandez-Ayala
-**Examiner:** Dimos V. Dimarogonas
-
-<table>
-  <tr>
-    <td align="center"><b>1. Python simulation</b></td>
-    <td align="center"><b>2. Gazebo simulation</b></td>
-    <td align="center"><b>3. Real experiment</b></td>
-  </tr>
-  <tr>
-    <td><img src="docs/media/formation_animation_python.gif" alt="Python simulation of the formation controller" width="100%"></td>
-    <td><img src="docs/media/formation_animation_gazebo.gif" alt="Gazebo simulation with BlueROV2 Heavy vehicles" width="100%"></td>
-    <td><img src="docs/media/formation_animation_pool.gif" alt="Real experiment at the KTH Marinarium" width="100%"></td>
-  </tr>
-  <tr>
-    <td align="center"><sub>Idealised dynamics</sub></td>
-    <td align="center"><sub>Full ROS 2 / PX4 stack</sub></td>
-    <td align="center"><sub>BlueROV2 Heavy, Qualisys MoCap</sub></td>
-  </tr>
-</table>
+**Examiner:** Dimos Dimarogonas
 
 ### From simulation to the pool
 
 The controller was developed in three stages, each adding realism.
 
 1. **Python simulation:** the formation controller is first tested with idealised vehicle dynamics. This is where the recentred Barrier Lyapunov Functions are tuned and the safety constraints (collision avoidance, connectivity, field of view and boundary avoidance) are checked in isolation.
+
+    <p align="center">
+      <img src="docs/media/formation_animation_python.gif" alt="Python simulation of the formation controller" width="80%">
+    </p>
+
 2. **Gazebo simulation:** the same controller runs on BlueROV2 Heavy models through the full ROS 2 and PX4 stack. This exposes the effects the idealised model hides, such as actuator allocation, communication timing and offboard control behaviour.
+
+    <p align="center">
+      <img src="docs/media/formation_animation_gazebo.gif" alt="Gazebo simulation with BlueROV2 Heavy vehicles" width="80%">
+    </p>
+
 3. **Real experiment:** two BlueROV2 Heavy vehicles are tested at the KTH Marinarium, with Qualisys motion capture providing ground truth. The hardware runs confirm that the safety constraints hold in practice and that they improve formation accuracy rather than degrading it.
+
+    <p align="center">
+      <img src="docs/media/formation_animation_pool.gif" alt="Real experiment at the KTH Marinarium" width="80%">
+    </p>
 
 ## Overview
 
