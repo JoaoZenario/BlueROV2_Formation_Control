@@ -13,8 +13,8 @@ MSc thesis project, KTH Royal Institute of Technology, Stockholm.
     <td align="center"><b>3. Real experiment</b></td>
   </tr>
   <tr>
-    <td><img src="docs/media/formation_animation_python_sim.gif" alt="Python simulation of the formation controller" width="100%"></td>
-    <td><img src="docs/media/formation_animation_gazebo_sim.gif" alt="Gazebo simulation with BlueROV2 Heavy vehicles" width="100%"></td>
+    <td><img src="docs/media/formation_animation_python.gif" alt="Python simulation of the formation controller" width="100%"></td>
+    <td><img src="docs/media/formation_animation_gazebo.gif" alt="Gazebo simulation with BlueROV2 Heavy vehicles" width="100%"></td>
     <td><img src="docs/media/formation_animation_pool.gif" alt="Real experiment at the KTH Marinarium" width="100%"></td>
   </tr>
   <tr>
