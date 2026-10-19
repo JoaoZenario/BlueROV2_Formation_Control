@@ -4,7 +4,7 @@ MSc thesis project, KTH Royal Institute of Technology, Stockholm.
 
 **Author:** João Zenário
 **Supervisors:** Nicola De Carli, Victor Nan Fernandez-Ayala
-**Examiner:** Dimos Dimarogonas
+**Examiner:** Dimos V. Dimarogonas
 
 ### From simulation to the pool
 
