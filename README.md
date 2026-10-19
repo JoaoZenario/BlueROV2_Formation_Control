@@ -10,7 +10,7 @@ MSc thesis project, KTH Royal Institute of Technology, Stockholm.
 
 The controller was developed in three stages, each adding realism.
 
-1. **Python simulation:** the formation controller is first tested with idealised vehicle dynamics. This is where the recentred Barrier Lyapunov Functions are tuned and the safety constraints (collision avoidance, connectivity, field of view and boundary avoidance) are checked in isolation.
+1. **Python simulation:** the formation controller is first tested with idealised vehicle dynamics. This is where the recentred Barrier Lyapunov Functions are tuned and the safety constraints (collision avoidance, connectivity, field of view compliance) are checked in isolation.
 
     <p align="center">
       <img src="docs/media/formation_animation_python.gif" alt="Python simulation of the formation controller" width="80%">
